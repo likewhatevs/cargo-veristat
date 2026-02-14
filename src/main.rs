@@ -37,7 +37,7 @@ fn run(args: cli::Args) -> Result<()> {
     let metadata = discovery::load_metadata(args.manifest_path.as_ref())?;
 
     // Discover packages
-    let packages = discovery::discover(&metadata, &args.targets)?;
+    let packages = discovery::discover(&metadata, &args.targets, args.manifest_path.as_ref())?;
 
     if packages.is_empty() {
         eprintln!("No packages found.");

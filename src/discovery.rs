@@ -13,7 +13,14 @@ pub struct BpfPackage {
 /// Returns all workspace packages that have a binary target. Packages with
 /// `[package.metadata.veristat] disable = true` are skipped unless explicitly
 /// named in `targets`.
-pub fn discover(metadata: &Metadata, targets: &[String]) -> Result<Vec<BpfPackage>> {
+///
+/// When `manifest_path` points to a specific package (not the workspace root)
+/// and no explicit targets are given, discovery is scoped to just that package.
+pub fn discover(
+    metadata: &Metadata,
+    targets: &[String],
+    manifest_path: Option<&PathBuf>,
+) -> Result<Vec<BpfPackage>> {
     let packages: Vec<BpfPackage> = metadata
         .packages
         .iter()
@@ -35,6 +42,10 @@ pub fn discover(metadata: &Metadata, targets: &[String]) -> Result<Vec<BpfPackag
         .collect();
 
     if targets.is_empty() {
+        // If --manifest-path points to a specific package, scope to it
+        if let Some(scope) = manifest_scope(metadata, manifest_path) {
+            return Ok(packages.into_iter().filter(|p| p.name == scope).collect());
+        }
         // Return all non-disabled packages
         Ok(packages
             .into_iter()
@@ -76,6 +87,32 @@ pub fn binary_name(metadata: &Metadata, package_name: &str) -> String {
 /// Get the workspace target directory from cached metadata.
 pub fn target_dir(metadata: &Metadata) -> PathBuf {
     metadata.target_directory.clone().into()
+}
+
+/// If `manifest_path` points to a specific package's Cargo.toml (not the
+/// workspace root), return that package's name so discovery can be scoped.
+fn manifest_scope(metadata: &Metadata, manifest_path: Option<&PathBuf>) -> Option<String> {
+    let manifest_path = manifest_path?;
+    let manifest_path = std::fs::canonicalize(manifest_path).ok()?;
+
+    let workspace_manifest: PathBuf =
+        PathBuf::from(metadata.workspace_root.as_str()).join("Cargo.toml");
+    let workspace_manifest = std::fs::canonicalize(&workspace_manifest).ok()?;
+
+    if manifest_path == workspace_manifest {
+        return None;
+    }
+
+    metadata
+        .packages
+        .iter()
+        .find(|p| {
+            std::fs::canonicalize(p.manifest_path.as_std_path())
+                .ok()
+                .as_deref()
+                == Some(manifest_path.as_path())
+        })
+        .map(|p| p.name.clone())
 }
 
 /// Load workspace metadata.
@@ -178,7 +215,7 @@ mod tests {
     #[test]
     fn discover_no_targets_excludes_disabled_and_libs() {
         let meta = mock_metadata();
-        let result = discover(&meta, &[]).unwrap();
+        let result = discover(&meta, &[], None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "bin_foo");
     }
@@ -187,7 +224,7 @@ mod tests {
     fn discover_explicit_disabled_target_included() {
         let meta = mock_metadata();
         let targets = vec!["bin_bar".to_string()];
-        let result = discover(&meta, &targets).unwrap();
+        let result = discover(&meta, &targets, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "bin_bar");
     }
@@ -196,21 +233,21 @@ mod tests {
     fn discover_unknown_target_returns_empty() {
         let meta = mock_metadata();
         let targets = vec!["nonexistent".to_string()];
-        let result = discover(&meta, &targets).unwrap();
+        let result = discover(&meta, &targets, None).unwrap();
         assert!(result.is_empty());
     }
 
     #[test]
     fn discover_lib_only_package_excluded() {
         let meta = mock_metadata();
-        let result = discover(&meta, &[]).unwrap();
+        let result = discover(&meta, &[], None).unwrap();
         assert!(!result.iter().any(|p| p.name == "some_lib"));
     }
 
     #[test]
     fn discover_excludes_non_workspace_packages() {
         let meta = mock_metadata();
-        let result = discover(&meta, &[]).unwrap();
+        let result = discover(&meta, &[], None).unwrap();
         assert!(!result.iter().any(|p| p.name == "external_bin"));
     }
 
@@ -224,5 +261,104 @@ mod tests {
     fn binary_name_unknown_package_returns_name() {
         let meta = mock_metadata();
         assert_eq!(binary_name(&meta, "nonexistent"), "nonexistent");
+    }
+
+    /// Build mock metadata backed by real files on disk so canonicalize works.
+    fn mock_metadata_on_disk(root: &std::path::Path) -> Metadata {
+        // Create workspace root Cargo.toml
+        std::fs::write(root.join("Cargo.toml"), b"[workspace]").unwrap();
+
+        // Create package dirs with Cargo.toml
+        for name in &["pkg_a", "pkg_b"] {
+            let dir = root.join(name);
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("Cargo.toml"), b"[package]").unwrap();
+            std::fs::write(dir.join("src/main.rs"), b"fn main(){}").unwrap();
+        }
+
+        let pkg = |name: &str| -> serde_json::Value {
+            let dir = root.join(name);
+            serde_json::json!({
+                "name": name,
+                "version": "0.1.0",
+                "id": format!("{} 0.1.0 (path+file://{})", name, dir.display()),
+                "manifest_path": dir.join("Cargo.toml").to_string_lossy(),
+                "dependencies": [],
+                "targets": [{
+                    "name": name,
+                    "src_path": dir.join("src/main.rs").to_string_lossy(),
+                    "kind": ["bin"],
+                    "crate_types": ["bin"],
+                    "required_features": [],
+                    "edition": "2021",
+                    "doctest": false,
+                    "test": true,
+                    "doc": true
+                }],
+                "features": {},
+                "metadata": null,
+                "authors": [],
+                "categories": [],
+                "keywords": [],
+                "source": null,
+                "description": null,
+                "license": null,
+                "license_file": null,
+                "readme": null,
+                "repository": null,
+                "homepage": null,
+                "documentation": null,
+                "links": null,
+                "publish": null,
+                "default_run": null,
+                "rust_version": null,
+                "edition": "2021"
+            })
+        };
+
+        let json = serde_json::json!({
+            "packages": [pkg("pkg_a"), pkg("pkg_b")],
+            "workspace_members": [
+                format!("pkg_a 0.1.0 (path+file://{})", root.join("pkg_a").display()),
+                format!("pkg_b 0.1.0 (path+file://{})", root.join("pkg_b").display()),
+            ],
+            "workspace_root": root.to_string_lossy(),
+            "target_directory": root.join("target").to_string_lossy(),
+            "version": 1,
+            "resolve": null,
+            "metadata": null
+        });
+
+        serde_json::from_value(json).expect("failed to parse mock metadata")
+    }
+
+    #[test]
+    fn discover_manifest_path_scopes_to_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = mock_metadata_on_disk(dir.path());
+        let manifest = dir.path().join("pkg_a/Cargo.toml");
+        let result = discover(&meta, &[], Some(&manifest)).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "pkg_a");
+    }
+
+    #[test]
+    fn discover_workspace_manifest_returns_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = mock_metadata_on_disk(dir.path());
+        let manifest = dir.path().join("Cargo.toml");
+        let result = discover(&meta, &[], Some(&manifest)).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn discover_explicit_targets_ignore_manifest_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = mock_metadata_on_disk(dir.path());
+        let manifest = dir.path().join("pkg_a/Cargo.toml");
+        let targets = vec!["pkg_b".to_string()];
+        let result = discover(&meta, &targets, Some(&manifest)).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "pkg_b");
     }
 }
