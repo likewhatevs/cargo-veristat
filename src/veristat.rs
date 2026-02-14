@@ -323,13 +323,17 @@ pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
         let csv_path = temp_dir.join(&csv_filename);
         write_package_csv(&csv_path, &result.headers, &result.verdict.records)?;
 
+        let prog_name_idx = result.headers.iter().position(|h| h == "prog_name");
+
         match replay_csv(&csv_path) {
             Ok(output) => print!("{}", output),
             Err(_) => {
                 // Fallback: print records manually
                 for record in &result.verdict.records {
                     let fname = record.get(file_name_idx).unwrap_or("?");
-                    let prog = record.get(1).unwrap_or("?");
+                    let prog = prog_name_idx
+                        .and_then(|i| record.get(i))
+                        .unwrap_or("?");
                     let verdict_str = record.get(verdict_idx).unwrap_or("?");
                     println!("  {} / {} : {}", fname, prog, verdict_str);
                 }
@@ -377,10 +381,14 @@ pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
             }
 
             for (file_name, progs) in &failed_by_object {
+                let csv_basename = Path::new(file_name)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or(file_name);
                 let obj_path = result.objects.iter().find(|p| {
                     p.file_name()
                         .and_then(|f| f.to_str())
-                        .is_some_and(|f| f == file_name)
+                        .is_some_and(|f| f == csv_basename)
                 });
                 if let Some(obj_path) = obj_path {
                     print_verifier_logs(obj_path, progs, result.globals_path.as_deref());
