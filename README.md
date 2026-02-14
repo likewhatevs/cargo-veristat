@@ -5,6 +5,8 @@
 
 A Cargo subcommand that runs [veristat](https://github.com/libbpf/veristat) verification on BPF programs embedded in Rust binaries. It automates the build-extract-verify pipeline for workspaces like [sched_ext](https://github.com/sched-ext/scx).
 
+In addition to that, it supports playing rodata dumps through the verifier in the format bpftool map dump outputs. In other words, pair this with vng (i.e. iterate kernel versions) and rodata dumps (1 for each variation of your input rodata/variables) and the command `cargo veristat` will let you know if you are happy or sad.
+
 ## Prerequisites
 
 - **veristat** on `$PATH` (`dnf install veristat` / `apt install veristat` / build from source)
