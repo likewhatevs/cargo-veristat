@@ -20,6 +20,10 @@ pub struct Args {
     /// Path to bpftool rodata JSON dump (from `bpftool map dump name <map>.rodata`)
     #[arg(long)]
     pub rodata: Option<PathBuf>,
+
+    /// Build profile to use (e.g. release, ci). Defaults to dev.
+    #[arg(long)]
+    pub profile: Option<String>,
 }
 
 #[cfg(test)]
@@ -99,5 +103,24 @@ mod tests {
     fn parse_no_rodata_is_none() {
         let args = parse(&["cargo", "veristat"]);
         assert!(args.rodata.is_none());
+    }
+
+    #[test]
+    fn parse_with_profile() {
+        let args = parse(&["cargo", "veristat", "--profile", "release"]);
+        assert_eq!(args.profile.unwrap(), "release");
+    }
+
+    #[test]
+    fn parse_custom_profile() {
+        let args = parse(&["cargo", "veristat", "--profile", "ci", "pkg_foo"]);
+        assert_eq!(args.profile.unwrap(), "ci");
+        assert_eq!(args.targets, vec!["pkg_foo"]);
+    }
+
+    #[test]
+    fn parse_no_profile_is_none() {
+        let args = parse(&["cargo", "veristat"]);
+        assert!(args.profile.is_none());
     }
 }

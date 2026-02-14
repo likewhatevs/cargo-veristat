@@ -56,6 +56,7 @@ fn run(args: cli::Args) -> Result<()> {
 
     // Get workspace target directory
     let target_dir = discovery::target_dir(&metadata);
+    let profile_dir = profile_target_dir(args.profile.as_deref());
 
     // Build stale/missing packages and extract BPF objects
     let temp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
@@ -64,13 +65,16 @@ fn run(args: cli::Args) -> Result<()> {
 
     for pkg in &packages {
         let binary_name = discovery::binary_name(&metadata, &pkg.name);
-        let binary_path = target_dir.join("debug").join(&binary_name);
+        let binary_path = target_dir.join(&profile_dir).join(&binary_name);
 
         // Build if stale or missing
         if is_stale(&binary_path, &pkg.manifest_dir) {
             println!("Building {}...", pkg.name);
             let mut cmd = process::Command::new("cargo");
             cmd.arg("build").arg("-p").arg(&pkg.name);
+            if let Some(ref profile) = args.profile {
+                cmd.arg("--profile").arg(profile);
+            }
             if let Some(ref manifest) = args.manifest_path {
                 cmd.arg("--manifest-path").arg(manifest);
             }
@@ -218,6 +222,20 @@ fn run(args: cli::Args) -> Result<()> {
     Ok(())
 }
 
+/// Map a cargo `--profile` name to its target subdirectory.
+///
+/// Cargo uses `debug` for dev/test and `release` for release/bench.
+/// Custom profiles use their name directly.
+pub(crate) fn profile_target_dir(profile: Option<&str>) -> String {
+    match profile {
+        None | Some("dev") => "debug".into(),
+        Some("test") => "debug".into(),
+        Some("release") => "release".into(),
+        Some("bench") => "release".into(),
+        Some(custom) => custom.into(),
+    }
+}
+
 /// Check if the binary is stale (missing or older than source files).
 pub(crate) fn is_stale(binary: &Path, source_dir: &Path) -> bool {
     let binary_mtime = match std::fs::metadata(binary) {
@@ -362,5 +380,35 @@ mod tests {
         let mtime = newest_mtime(dir.path()).unwrap();
         let deep_mtime = fs::metadata(&deep).unwrap().modified().unwrap();
         assert_eq!(mtime, deep_mtime);
+    }
+
+    #[test]
+    fn profile_target_dir_defaults_to_debug() {
+        assert_eq!(profile_target_dir(None), "debug");
+    }
+
+    #[test]
+    fn profile_target_dir_dev_maps_to_debug() {
+        assert_eq!(profile_target_dir(Some("dev")), "debug");
+    }
+
+    #[test]
+    fn profile_target_dir_test_maps_to_debug() {
+        assert_eq!(profile_target_dir(Some("test")), "debug");
+    }
+
+    #[test]
+    fn profile_target_dir_release() {
+        assert_eq!(profile_target_dir(Some("release")), "release");
+    }
+
+    #[test]
+    fn profile_target_dir_bench_maps_to_release() {
+        assert_eq!(profile_target_dir(Some("bench")), "release");
+    }
+
+    #[test]
+    fn profile_target_dir_custom() {
+        assert_eq!(profile_target_dir(Some("ci")), "ci");
     }
 }
