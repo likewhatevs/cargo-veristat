@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt -- --check
+      - run: cargo clippy -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libelf-dev zlib1g-dev libcap-dev binutils-dev
+
+      - name: Build and install bpftool
+        run: |
+          git clone --recurse-submodules --depth 1 https://github.com/libbpf/bpftool.git
+          make -C bpftool/src -j$(nproc)
+          sudo make -C bpftool/src install
+
+      - name: Build and install veristat
+        run: |
+          git clone --recurse-submodules --depth 1 https://github.com/libbpf/veristat.git
+          make -C veristat/src -j$(nproc)
+          sudo make -C veristat/src install
+
+      - name: Ensure bpffs is mounted
+        run: sudo mount -t bpf bpf /sys/fs/bpf || true
+
+      - name: Run tests with coverage
+        run: sudo -E env PATH="$PATH" cargo llvm-cov nextest --features integration --lcov --output-path lcov.info
+
+      - name: Fix permissions
+        run: sudo chown -R $(id -u):$(id -g) lcov.info target/
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info

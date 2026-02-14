@@ -1,5 +1,8 @@
 # cargo-veristat
 
+[![CI](https://github.com/likewhatevs/cargo-veristat/actions/workflows/ci.yml/badge.svg)](https://github.com/likewhatevs/cargo-veristat/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/github/likewhatevs/cargo-veristat/graph/badge.svg)](https://codecov.io/github/likewhatevs/cargo-veristat)
+
 A Cargo subcommand that runs [veristat](https://github.com/libbpf/veristat) verification on BPF programs embedded in Rust binaries. It automates the build-extract-verify pipeline for workspaces like [sched_ext](https://github.com/sched-ext/scx).
 
 ## Prerequisites

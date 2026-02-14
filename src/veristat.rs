@@ -38,12 +38,7 @@ pub(crate) fn build_object_map(
     let mut object_map = HashMap::new();
     for (pkg, objects) in objects_by_package {
         for obj in objects {
-            let filename = obj
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string();
+            let filename = obj.file_name().unwrap().to_str().unwrap().to_string();
             object_map.insert(filename, pkg.clone());
         }
     }
@@ -313,7 +308,11 @@ pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
             all_passed = false;
         }
 
-        let file_name_idx = result.headers.iter().position(|h| h == "file_name").unwrap();
+        let file_name_idx = result
+            .headers
+            .iter()
+            .position(|h| h == "file_name")
+            .unwrap();
         let verdict_idx = result.headers.iter().position(|h| h == "verdict").unwrap();
 
         // Write per-run CSV and run veristat -R for readable output
@@ -557,16 +556,28 @@ fn print_verifier_logs(obj_path: &Path, prog_names: &[String], globals_path: Opt
 fn print_rainbow_banner() {
     let text = "!!!!!!!!!!VERIFICATION FAILED!!!!!!!!!!";
     let colors = [
-        "\x1b[1;4;5;31m", "\x1b[1;4;5;33m", "\x1b[1;4;5;32m", "\x1b[1;4;5;36m",
-        "\x1b[1;4;5;35m", "\x1b[1;4;5;91m", "\x1b[1;4;5;93m", "\x1b[1;4;5;95m",
+        "\x1b[1;4;5;31m",
+        "\x1b[1;4;5;33m",
+        "\x1b[1;4;5;32m",
+        "\x1b[1;4;5;36m",
+        "\x1b[1;4;5;35m",
+        "\x1b[1;4;5;91m",
+        "\x1b[1;4;5;93m",
+        "\x1b[1;4;5;95m",
     ];
-    let offset = std::time::UNIX_EPOCH.elapsed().unwrap_or_default().subsec_nanos() as usize;
+    let offset = std::time::UNIX_EPOCH
+        .elapsed()
+        .unwrap_or_default()
+        .subsec_nanos() as usize;
     let rainbow: String = text
         .chars()
         .enumerate()
         .map(|(i, c)| format!("{}{}", colors[(i / 5 + offset) % colors.len()], c))
         .collect();
-    println!("\n\u{1F62D}\u{1F625} {}\x1b[0m \u{1F625}\u{1F62D}\x07\n", rainbow);
+    println!(
+        "\n\u{1F62D}\u{1F625} {}\x1b[0m \u{1F625}\u{1F62D}\x07\n",
+        rainbow
+    );
 }
 
 /// Replay a CSV file through `veristat -R` for human-readable output.
@@ -1031,8 +1042,8 @@ File  Prog  Verdict\n";
         let obj = tmp.path().join("pass.bpf.o");
         compile_bpf(&bpf_src("pass.bpf.c"), &obj);
 
-        let csv_output = run_veristat_csv(&[obj.clone()], None)
-            .expect("veristat failed on pass.bpf.o");
+        let csv_output =
+            run_veristat_csv(&[obj.clone()], None).expect("veristat failed on pass.bpf.o");
 
         let mut object_map = HashMap::new();
         object_map.insert("pass.bpf.o".to_string(), "test_pass".to_string());
@@ -1050,8 +1061,8 @@ File  Prog  Verdict\n";
         let obj = tmp.path().join("fail.bpf.o");
         compile_bpf(&bpf_src("fail.bpf.c"), &obj);
 
-        let csv_output = run_veristat_csv(&[obj.clone()], None)
-            .expect("veristat failed to run on fail.bpf.o");
+        let csv_output =
+            run_veristat_csv(&[obj.clone()], None).expect("veristat failed to run on fail.bpf.o");
 
         let mut object_map = HashMap::new();
         object_map.insert("fail.bpf.o".to_string(), "test_fail".to_string());
@@ -1075,16 +1086,16 @@ File  Prog  Verdict\n";
         compile_bpf(&bpf_src("pass.bpf.c"), &obj);
 
         // Run without rodata overrides (defaults: mode=0, threshold=0)
-        let csv_default = run_veristat_csv(&[obj.clone()], None)
-            .expect("veristat failed without globals");
+        let csv_default =
+            run_veristat_csv(&[obj.clone()], None).expect("veristat failed without globals");
         let insns_default = get_total_insns(&csv_default);
 
         // Write rodata overrides: mode=1 enables all branches, threshold=500
         let global_vars = vec!["mode = 1".to_string(), "threshold = 500".to_string()];
         let globals_path = write_globals_file(tmp.path(), &global_vars, "test").unwrap();
 
-        let csv_rodata = run_veristat_csv(&[obj], Some(&globals_path))
-            .expect("veristat failed with globals");
+        let csv_rodata =
+            run_veristat_csv(&[obj], Some(&globals_path)).expect("veristat failed with globals");
         let insns_rodata = get_total_insns(&csv_rodata);
 
         assert!(
@@ -1142,9 +1153,7 @@ File  Prog  Verdict\n";
         let json: serde_json::Value =
             serde_json::from_slice(output).expect("failed to parse bpftool JSON");
         if let Some(arr) = json.as_array() {
-            arr.first()
-                .cloned()
-                .expect("empty bpftool JSON array")
+            arr.first().cloned().expect("empty bpftool JSON array")
         } else {
             json
         }
@@ -1210,10 +1219,7 @@ File  Prog  Verdict\n";
         compile_bpf(&bpf_src("roundtrip.bpf.c"), &obj);
 
         // Load the program via bpftool so we can dump its datasec maps
-        let pin_path = format!(
-            "/sys/fs/bpf/cargo_veristat_test_{}",
-            std::process::id()
-        );
+        let pin_path = format!("/sys/fs/bpf/cargo_veristat_test_{}", std::process::id());
         let _guard = bpftool_load(&obj, &pin_path);
 
         // Dump ALL maps, parse each as a datasec, collect globals
@@ -1302,14 +1308,13 @@ File  Prog  Verdict\n";
 
         // --- Lossless round-trip: all globals via -G should equal no -G ---
 
-        let csv_baseline = run_veristat_csv(&[obj.clone()], None)
-            .expect("veristat failed without globals");
+        let csv_baseline =
+            run_veristat_csv(&[obj.clone()], None).expect("veristat failed without globals");
         let insns_baseline = get_total_insns(&csv_baseline);
 
         let globals_path = write_globals_file(tmp.path(), &globals, "roundtrip").unwrap();
-        let csv_roundtrip =
-            run_veristat_csv(&[obj.clone()], Some(&globals_path))
-                .expect("veristat failed with round-trip globals");
+        let csv_roundtrip = run_veristat_csv(&[obj.clone()], Some(&globals_path))
+            .expect("veristat failed with round-trip globals");
         let insns_roundtrip = get_total_insns(&csv_roundtrip);
 
         assert_eq!(
@@ -1336,16 +1341,16 @@ File  Prog  Verdict\n";
         std::fs::create_dir(&modified_dir).unwrap();
         let modified_path = write_globals_file(&modified_dir, &modified, "modified").unwrap();
 
-        let csv_modified =
-            run_veristat_csv(&[obj], Some(&modified_path))
-                .expect("veristat failed with modified globals");
+        let csv_modified = run_veristat_csv(&[obj], Some(&modified_path))
+            .expect("veristat failed with modified globals");
         let insns_modified = get_total_insns(&csv_modified);
 
         assert!(
             insns_modified > insns_baseline,
             "modified globals (mode=1) should increase instruction count: \
              baseline={}, modified={}",
-            insns_baseline, insns_modified
+            insns_baseline,
+            insns_modified
         );
     }
 }

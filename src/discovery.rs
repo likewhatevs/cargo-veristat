@@ -91,11 +91,7 @@ pub fn load_metadata(manifest_path: Option<&PathBuf>) -> Result<Metadata> {
 mod tests {
     use super::*;
 
-    fn make_package(
-        name: &str,
-        metadata: serde_json::Value,
-        has_bin: bool,
-    ) -> serde_json::Value {
+    fn make_package(name: &str, metadata: serde_json::Value, has_bin: bool) -> serde_json::Value {
         let mut targets = vec![];
         if has_bin {
             targets.push(serde_json::json!({
@@ -152,27 +148,15 @@ mod tests {
     }
 
     fn mock_metadata() -> Metadata {
-        let bin_foo = make_package(
-            "bin_foo",
-            serde_json::Value::Null,
-            true,
-        );
+        let bin_foo = make_package("bin_foo", serde_json::Value::Null, true);
         let bin_bar = make_package(
             "bin_bar",
             serde_json::json!({"veristat": {"disable": true}}),
             true,
         );
-        let some_lib = make_package(
-            "some_lib",
-            serde_json::Value::Null,
-            false,
-        );
+        let some_lib = make_package("some_lib", serde_json::Value::Null, false);
         // A bin package that is NOT a workspace member (e.g. an external dep)
-        let external_bin = make_package(
-            "external_bin",
-            serde_json::Value::Null,
-            true,
-        );
+        let external_bin = make_package("external_bin", serde_json::Value::Null, true);
 
         let json = serde_json::json!({
             "packages": [bin_foo, bin_bar, some_lib, external_bin],
@@ -242,4 +226,3 @@ mod tests {
         assert_eq!(binary_name(&meta, "nonexistent"), "nonexistent");
     }
 }
-

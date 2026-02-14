@@ -25,7 +25,9 @@ fn main() {
 fn run(args: cli::Args) -> Result<()> {
     // --rodata applies to a single scheduler, so require exactly one target
     if args.rodata.is_some() && args.targets.len() != 1 {
-        anyhow::bail!("--rodata requires exactly one target package (e.g. `cargo veristat --rodata dump.json scx_layered`)");
+        anyhow::bail!(
+            "--rodata requires exactly one target package (e.g. `cargo veristat --rodata dump.json scx_layered`)"
+        );
     }
 
     // Check veristat is available early
@@ -102,7 +104,11 @@ fn run(args: cli::Args) -> Result<()> {
                     paths.push(obj_path);
                 }
 
-                println!("  Extracted {} BPF object(s) from {}", paths.len(), pkg.name);
+                println!(
+                    "  Extracted {} BPF object(s) from {}",
+                    paths.len(),
+                    pkg.name
+                );
                 objects_by_package.insert(pkg.name.clone(), paths);
             }
             Err(e) => {

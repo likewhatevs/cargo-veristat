@@ -359,10 +359,7 @@ mod tests {
     #[test]
     fn multiple_entries() {
         let json = rodata_json(r#"{"a": 1}, {"b": true}, {"c": [5]}"#);
-        assert_eq!(
-            parse(&json),
-            vec!["a = 1", "b = 1", "c[0] = 5"]
-        );
+        assert_eq!(parse(&json), vec!["a = 1", "b = 1", "c[0] = 5"]);
     }
 
     #[test]
@@ -440,10 +437,7 @@ mod tests {
                 }
             }
         }]"#;
-        assert_eq!(
-            parse(json),
-            vec!["nr_layers = 4", "smt_enabled = 1"]
-        );
+        assert_eq!(parse(json), vec!["nr_layers = 4", "smt_enabled = 1"]);
     }
 
     #[test]
@@ -451,10 +445,7 @@ mod tests {
         // Real rodata contains u64::MAX (e.g. __SCX_SLICE_INF = 18446744073709551615).
         // Verify serde_json preserves full precision and doesn't downcast to f64.
         let json = rodata_json(r#"{"__SCX_SLICE_INF": 18446744073709551615}"#);
-        assert_eq!(
-            parse(&json),
-            vec!["__SCX_SLICE_INF = 18446744073709551615"]
-        );
+        assert_eq!(parse(&json), vec!["__SCX_SLICE_INF = 18446744073709551615"]);
     }
 
     #[test]
@@ -522,8 +513,7 @@ mod tests {
         use object::write::Object as WriteObject;
         use object::{Architecture, BinaryFormat, Endianness};
 
-        let mut obj =
-            WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
 
         for (name, size) in sections {
             let section_id = obj.add_section(
@@ -531,8 +521,7 @@ mod tests {
                 name.as_bytes().to_vec(),
                 object::SectionKind::Data,
             );
-            obj.section_mut(section_id)
-                .set_data(vec![0u8; *size], 1);
+            obj.section_mut(section_id).set_data(vec![0u8; *size], 1);
         }
 
         obj.write().unwrap()
@@ -700,10 +689,7 @@ mod tests {
         let exclude: HashSet<String> = ["uei_dump_len".to_string()].into();
 
         let (filtered, removed) = filter_globals(globals, &exclude);
-        assert_eq!(
-            filtered,
-            vec!["nr_layers = 4", "smt_enabled = 1"]
-        );
+        assert_eq!(filtered, vec!["nr_layers = 4", "smt_enabled = 1"]);
         assert_eq!(removed, vec!["uei_dump_len"]);
     }
 
@@ -720,10 +706,7 @@ mod tests {
         let exclude: HashSet<String> = ["buf_len".to_string()].into();
 
         let (filtered, removed) = filter_globals(globals, &exclude);
-        assert_eq!(
-            filtered,
-            vec!["nr_layers = 4", "smt_enabled = 1"]
-        );
+        assert_eq!(filtered, vec!["nr_layers = 4", "smt_enabled = 1"]);
         assert_eq!(removed, vec!["buf_len"]);
     }
 
@@ -764,9 +747,7 @@ mod tests {
     // --- discover_configs tests ---
 
     fn write_rodata_json(dir: &Path, filename: &str, entries: &str) {
-        let json = format!(
-            r#"[{{"formatted": {{"value": {{".rodata": [{entries}]}}}}}}]"#
-        );
+        let json = format!(r#"[{{"formatted": {{"value": {{".rodata": [{entries}]}}}}}}]"#);
         std::fs::write(dir.join(filename), json).unwrap();
     }
 
@@ -843,10 +824,7 @@ mod tests {
         let exclude: HashSet<String> = ["uei_dump_len".to_string()].into();
         let configs = discover_configs(dir.path(), "veristat", &exclude).unwrap();
         assert_eq!(configs.len(), 1);
-        assert_eq!(
-            configs[0].globals,
-            vec!["nr_layers = 4", "smt_enabled = 1"]
-        );
+        assert_eq!(configs[0].globals, vec!["nr_layers = 4", "smt_enabled = 1"]);
     }
 
     #[test]
@@ -907,9 +885,8 @@ mod tests {
     fn integration_rodata_plus_elf_filtering() {
         // End-to-end: parse rodata JSON, detect resizable maps from ELF,
         // filter globals, verify correct result.
-        let json = rodata_json(
-            r#"{"nr_layers": 4}, {"uei_dump_len": 32768}, {"smt_enabled": true}"#,
-        );
+        let json =
+            rodata_json(r#"{"nr_layers": 4}, {"uei_dump_len": 32768}, {"smt_enabled": true}"#);
         let globals = parse_rodata_json(&json).unwrap();
         assert_eq!(globals.len(), 3);
 
@@ -924,10 +901,7 @@ mod tests {
         assert!(exclude.contains("uei_dump_len"));
 
         let (filtered, removed) = filter_globals(globals, &exclude);
-        assert_eq!(
-            filtered,
-            vec!["nr_layers = 4", "smt_enabled = 1"]
-        );
+        assert_eq!(filtered, vec!["nr_layers = 4", "smt_enabled = 1"]);
         assert_eq!(removed, vec!["uei_dump_len"]);
     }
 }

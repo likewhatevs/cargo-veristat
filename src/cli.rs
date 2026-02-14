@@ -73,10 +73,7 @@ mod tests {
     #[test]
     fn parse_with_rodata() {
         let args = parse(&["cargo", "veristat", "--rodata", "/tmp/rodata.json"]);
-        assert_eq!(
-            args.rodata.unwrap(),
-            PathBuf::from("/tmp/rodata.json")
-        );
+        assert_eq!(args.rodata.unwrap(), PathBuf::from("/tmp/rodata.json"));
     }
 
     #[test]
@@ -91,7 +88,10 @@ mod tests {
             "pkg_foo",
         ]);
         assert_eq!(args.rodata.unwrap(), PathBuf::from("/tmp/rodata.json"));
-        assert_eq!(args.manifest_path.unwrap(), PathBuf::from("/some/Cargo.toml"));
+        assert_eq!(
+            args.manifest_path.unwrap(),
+            PathBuf::from("/some/Cargo.toml")
+        );
         assert_eq!(args.targets, vec!["pkg_foo"]);
     }
 
@@ -100,5 +100,4 @@ mod tests {
         let args = parse(&["cargo", "veristat"]);
         assert!(args.rodata.is_none());
     }
-
 }
