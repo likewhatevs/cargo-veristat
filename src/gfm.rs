@@ -147,13 +147,13 @@ fn write_system_info(w: &mut impl Write, info: &SystemInfo) -> std::io::Result<(
     if info.kernel.is_none() && info.package_commits.is_empty() {
         return Ok(());
     }
-    writeln!(w)?;
     if let Some(ref kernel) = info.kernel {
         writeln!(w, "- **Kernel**: {}", kernel)?;
     }
     for (pkg, hash) in &info.package_commits {
         writeln!(w, "- **{} Commit**: {}", pkg, hash)?;
     }
+    writeln!(w)?;
     Ok(())
 }
 
@@ -252,8 +252,8 @@ pub(crate) fn write_gfm_report(
     logs: &[VerifierLog],
 ) -> std::io::Result<()> {
     writeln!(w, "## Verification Report\n")?;
-    write_summary_table(w, results)?;
     write_system_info(w, info)?;
+    write_summary_table(w, results)?;
     write_verifier_errors(w, logs)?;
     write_full_logs(w, logs)?;
     Ok(())
