@@ -212,7 +212,7 @@ fn run(args: cli::Args) -> Result<()> {
     let gfm_mode = args.gfm_mode();
 
     let all_passed = if gfm_mode == cli::GfmMode::Off {
-        veristat::run_and_report(&runs, temp_dir.path())?
+        veristat::run_and_report(&runs, temp_dir.path(), args.raw)?
     } else {
         let results = veristat::execute_runs(&runs, temp_dir.path())?;
         if results.is_empty() {
@@ -220,7 +220,7 @@ fn run(args: cli::Args) -> Result<()> {
             true
         } else {
             let logs = veristat::collect_verifier_logs(&results);
-            let all_passed = veristat::print_report(&results, &logs, temp_dir.path())?;
+            let all_passed = veristat::print_report(&results, &logs, temp_dir.path(), args.raw)?;
             gfm::report_gfm(gfm_mode, &results, &logs).context("Failed to write GFM report")?;
             all_passed
         }

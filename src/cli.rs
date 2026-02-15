@@ -39,6 +39,10 @@ pub struct Args {
     /// Like --stderr-gfm but uses ::debug:: for passing runs (hidden by default).
     #[arg(long, conflicts_with = "stderr_gfm")]
     pub stderr_gfm_erronly: bool,
+
+    /// Output raw verifier logs without cycle collapse.
+    #[arg(long)]
+    pub raw: bool,
 }
 
 impl Args {
@@ -170,6 +174,18 @@ mod tests {
         let result =
             Cargo::try_parse_from(["cargo", "veristat", "--stderr-gfm", "--stderr-gfm-erronly"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_raw_flag() {
+        let args = parse(&["cargo", "veristat", "--raw"]);
+        assert!(args.raw);
+    }
+
+    #[test]
+    fn parse_no_raw_default() {
+        let args = parse(&["cargo", "veristat"]);
+        assert!(!args.raw);
     }
 
     #[test]

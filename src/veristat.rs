@@ -371,6 +371,7 @@ pub(crate) fn print_report(
     results: &[RunResult],
     logs: &[VerifierLog],
     temp_dir: &Path,
+    raw: bool,
 ) -> Result<bool> {
     let mut all_passed = true;
 
@@ -423,7 +424,12 @@ pub(crate) fn print_report(
         println!("\n=== Verifier Logs ===");
         for log in logs {
             println!("\nPROCESSING {}", log.header);
-            println!("{}", log.log_body);
+            let body = if raw {
+                log.log_body.clone()
+            } else {
+                crate::gfm::collapse_cycles(&log.log_body)
+            };
+            println!("{}", body);
         }
     }
 
@@ -463,14 +469,14 @@ pub(crate) fn print_report(
 ///
 /// Each `VeristatRun` specifies a set of BPF objects and optional globals.
 /// Returns true if all runs passed, false if any failed.
-pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
+pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path, raw: bool) -> Result<bool> {
     let results = execute_runs(runs, temp_dir)?;
     if results.is_empty() {
         println!("No BPF objects to verify.");
         return Ok(true);
     }
     let logs = collect_verifier_logs(&results);
-    print_report(&results, &logs, temp_dir)
+    print_report(&results, &logs, temp_dir, raw)
 }
 
 /// Write a per-package CSV file from grouped records.

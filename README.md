@@ -42,6 +42,8 @@ For each package, `cargo veristat` will:
 3. Run `veristat` on each object and report pass/fail per program
 4. Re-run `veristat -v` on failing programs to show verifier error logs
 
+Verifier logs have repeating cycles collapsed by default for readability. Use `--raw` to disable cycle collapse and see the full unprocessed verifier output.
+
 ## Rodata configurations
 
 BPF programs often use `.rodata` globals (e.g. `nr_layers`, `smt_enabled`) that change which code paths the verifier explores. `cargo veristat` supports testing multiple rodata configurations to catch verification failures that only occur with specific settings.
