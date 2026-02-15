@@ -5,8 +5,6 @@ use std::process::Command;
 use crate::cli::GfmMode;
 use crate::veristat::{RunResult, VerifierLog};
 
-const TRUNCATION_THRESHOLD: usize = 40;
-const TRUNCATION_CONTEXT: usize = 20;
 /// Stay under GitHub's 1024KB step summary limit with some margin.
 const GFM_SIZE_BUDGET: usize = 1_000_000;
 
@@ -65,29 +63,6 @@ fn git_short_head() -> Option<String> {
 
 fn escape_pipe(s: &str) -> String {
     s.replace('|', "\\|")
-}
-
-/// Truncate a verifier log: top N + "... (M lines omitted) ..." + bottom N.
-fn truncate_log(log: &str) -> String {
-    let lines: Vec<&str> = log.lines().collect();
-    if lines.len() <= TRUNCATION_THRESHOLD {
-        return log.to_string();
-    }
-
-    let omitted = lines.len() - 2 * TRUNCATION_CONTEXT;
-    let mut out = String::new();
-    for line in &lines[..TRUNCATION_CONTEXT] {
-        out.push_str(line);
-        out.push('\n');
-    }
-    out.push_str(&format!("... ({} lines omitted) ...\n", omitted));
-    for (i, line) in lines[lines.len() - TRUNCATION_CONTEXT..].iter().enumerate() {
-        out.push_str(line);
-        if i < TRUNCATION_CONTEXT - 1 {
-            out.push('\n');
-        }
-    }
-    out
 }
 
 /// Normalize a BPF verifier log line by stripping variable register-state
@@ -336,17 +311,15 @@ pub(crate) fn collapse_cycles(log: &str) -> String {
 
 /// Truncate a verifier log to fit within a byte budget using top+bottom lines.
 ///
-/// First tries line-count truncation. If the result still exceeds `max_bytes`,
-/// greedily takes lines from the top and bottom of the original log to fill
-/// the budget — verifier logs tend to have cycles in the middle, so top+bottom
+/// If the log fits within `max_bytes`, returns it unchanged. Otherwise,
+/// greedily takes lines from the top and bottom to fill the budget —
+/// verifier logs tend to have cycles in the middle, so top+bottom
 /// preserves the most useful context.
 fn truncate_log_to_bytes(log: &str, max_bytes: usize) -> String {
-    let result = truncate_log(log);
-    if result.len() <= max_bytes {
-        return result;
+    if log.len() <= max_bytes {
+        return log.to_string();
     }
 
-    // Need byte-based truncation on the original log
     let lines: Vec<&str> = log.lines().collect();
     if lines.is_empty() {
         return String::new();
@@ -479,16 +452,20 @@ fn write_system_info(w: &mut impl Write, info: &SystemInfo) -> std::io::Result<(
 }
 
 /// Write Verifier Errors section with per-log byte budget for truncation.
+///
+/// Returns a `Vec<bool>` parallel to `logs` indicating which logs were truncated.
 fn write_verifier_errors(
     w: &mut impl Write,
     logs: &[VerifierLog],
     per_log_budget: usize,
-) -> std::io::Result<()> {
+) -> std::io::Result<Vec<bool>> {
     if logs.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     writeln!(w, "\n### Verifier Errors\n")?;
+
+    let mut was_truncated = Vec::with_capacity(logs.len());
 
     for log in logs {
         let line_count = log.log_body.lines().count();
@@ -499,6 +476,7 @@ fn write_verifier_errors(
         let cycles_collapsed = collapsed.len() < log.log_body.len();
         let truncated = truncate_log_to_bytes(&collapsed, per_log_budget);
         let bytes_truncated = truncated.len() < collapsed.len();
+        was_truncated.push(bytes_truncated);
 
         let escaped_label = escape_html(&label);
         let qualifier = match (cycles_collapsed, bytes_truncated) {
@@ -523,22 +501,23 @@ fn write_verifier_errors(
         writeln!(w, "</details>\n")?;
     }
 
-    Ok(())
+    Ok(was_truncated)
 }
 
-/// Write Full Verifier Logs section (collapsed, only when any log > threshold).
-fn write_full_logs(w: &mut impl Write, logs: &[VerifierLog]) -> std::io::Result<()> {
-    let needs_full = logs
-        .iter()
-        .any(|l| l.log_body.lines().count() > TRUNCATION_THRESHOLD);
-    if !needs_full {
+/// Write Full Verifier Logs section for logs that were truncated in the errors section.
+fn write_full_logs(
+    w: &mut impl Write,
+    logs: &[VerifierLog],
+    was_truncated: &[bool],
+) -> std::io::Result<()> {
+    if !was_truncated.iter().any(|&t| t) {
         return Ok(());
     }
 
     writeln!(w, "\n### Full Verifier Logs\n")?;
 
-    for log in logs {
-        if log.log_body.lines().count() <= TRUNCATION_THRESHOLD {
+    for (log, &truncated) in logs.iter().zip(was_truncated) {
+        if !truncated {
             continue;
         }
 
@@ -602,12 +581,12 @@ pub(crate) fn write_gfm_report(
         .checked_div(log_count)
         .unwrap_or(usize::MAX);
 
-    write_verifier_errors(&mut buf, logs, per_log_budget)?;
+    let was_truncated = write_verifier_errors(&mut buf, logs, per_log_budget)?;
 
     // Full logs: render to temp buffer, include only if within remaining budget
     let remaining = GFM_SIZE_BUDGET.saturating_sub(buf.len());
     let mut full_logs_buf = Vec::new();
-    write_full_logs(&mut full_logs_buf, logs)?;
+    write_full_logs(&mut full_logs_buf, logs, &was_truncated)?;
     if !full_logs_buf.is_empty() && full_logs_buf.len() <= remaining {
         buf.extend_from_slice(&full_logs_buf);
     }
@@ -895,34 +874,14 @@ mod tests {
     }
 
     #[test]
-    fn gfm_report_full_logs_when_long() {
-        let long_body: String = (0..50).map(|i| format!("line {}\n", i)).collect();
+    fn gfm_report_no_full_logs_when_not_truncated() {
+        // 50-line log fits within the per-log byte budget, so no full logs section
+        let body: String = (0..50).map(|i| format!("line {}\n", i)).collect();
         let logs = vec![make_log(
             "scx_layered",
             Some("8_layers"),
             "bad_prog",
-            &long_body,
-        )];
-        let results = vec![make_result(
-            "scx_layered",
-            Some("8_layers"),
-            vec![("bpf.bpf.o", "bad_prog", "failure", "5678")],
-        )];
-        let info = SystemInfo::new(None, &[]);
-        let out = output_string(|w| write_gfm_report(w, &info, &results, &logs));
-
-        assert!(out.contains("### Full Verifier Logs"));
-        assert!(out.contains("<details>\n<summary>"));
-    }
-
-    #[test]
-    fn gfm_report_no_full_logs_when_short() {
-        let short_body: String = (0..30).map(|i| format!("line {}\n", i)).collect();
-        let logs = vec![make_log(
-            "scx_layered",
-            Some("8_layers"),
-            "bad_prog",
-            &short_body,
+            &body,
         )];
         let results = vec![make_result(
             "scx_layered",
@@ -933,46 +892,10 @@ mod tests {
         let out = output_string(|w| write_gfm_report(w, &info, &results, &logs));
 
         assert!(out.contains("### Verifier Errors"));
+        // All 50 lines fit in the errors section — no truncation, so no full logs
         assert!(!out.contains("### Full Verifier Logs"));
     }
 
-    // --- Verifier log truncation tests ---
-
-    #[test]
-    fn verifier_log_truncation() {
-        let lines: String = (0..100).map(|i| format!("line {}\n", i)).collect();
-        let truncated = truncate_log(&lines);
-
-        // Should have top 20 lines
-        assert!(truncated.contains("line 0"));
-        assert!(truncated.contains("line 19"));
-        // Should have omission marker
-        assert!(truncated.contains("... (60 lines omitted) ..."));
-        // Should have bottom 20 lines
-        assert!(truncated.contains("line 80"));
-        assert!(truncated.contains("line 99"));
-        // Should NOT have middle lines
-        assert!(!truncated.contains("line 20\n"));
-        assert!(!truncated.contains("line 79\n"));
-    }
-
-    #[test]
-    fn verifier_log_short_shows_all() {
-        let lines: String = (0..30).map(|i| format!("line {}\n", i)).collect();
-        let result = truncate_log(&lines);
-
-        assert_eq!(result, lines);
-        assert!(!result.contains("omitted"));
-    }
-
-    #[test]
-    fn verifier_log_exactly_threshold() {
-        let lines: String = (0..40).map(|i| format!("line {}\n", i)).collect();
-        let result = truncate_log(&lines);
-
-        assert_eq!(result, lines);
-        assert!(!result.contains("omitted"));
-    }
 
     // --- Workflow command tests ---
 
@@ -1046,12 +969,11 @@ mod tests {
     }
 
     #[test]
-    fn truncate_to_bytes_line_count_sufficient() {
-        // 100 lines → line-count truncation gives 20+20=~40 lines
+    fn truncate_to_bytes_large_budget_unchanged() {
+        // 100 lines fits easily within 100KB budget — no truncation
         let log: String = (0..100).map(|i| format!("line {}\n", i)).collect();
         let result = truncate_log_to_bytes(&log, 100_000);
-        // Should be the same as line-count truncation
-        assert_eq!(result, truncate_log(&log));
+        assert_eq!(result, log);
     }
 
     #[test]
@@ -1112,19 +1034,31 @@ mod tests {
     }
 
     #[test]
-    fn gfm_report_full_logs_included_when_small() {
-        // Small logs should still get the full logs section
-        let body: String = (0..50).map(|i| format!("line {}\n", i)).collect();
-        let logs = vec![make_log("pkg", Some("cfg"), "prog", &body)];
-        let results = vec![make_result(
-            "pkg",
-            Some("cfg"),
-            vec![("bpf.bpf.o", "prog", "failure", "100")],
-        )];
+    fn gfm_report_full_logs_when_truncated() {
+        // Many large logs that exceed per-log byte budget → truncated → full logs shown
+        let big_body: String = (0..2000)
+            .map(|i| format!("R{}=scalar(smin=0,smax=4294967295) R10=fp0\n", i))
+            .collect();
+        let mut logs = Vec::new();
+        let mut results = Vec::new();
+        for i in 0..20 {
+            let name = format!("prog_{}", i);
+            logs.push(make_log("scx_lavd", Some("config"), &name, &big_body));
+            results.push(make_result(
+                "scx_lavd",
+                Some("config"),
+                vec![("bpf.bpf.o", &name, "failure", "100")],
+            ));
+        }
         let info = SystemInfo::new(None, &[]);
         let out = output_string(|w| write_gfm_report(w, &info, &results, &logs));
 
-        assert!(out.contains("### Full Verifier Logs"));
+        // Logs are byte-truncated in verifier errors section
+        assert!(out.contains("### Verifier Errors"));
+        assert!(out.contains("truncated"));
+        // Full logs section may or may not appear depending on remaining budget,
+        // but the report must stay within budget
+        assert!(out.len() <= GFM_SIZE_BUDGET);
     }
 
     // --- Cycle detection tests ---
@@ -1736,7 +1670,7 @@ mod tests {
             "lavd_dispatch",
             &log,
         )];
-        let out = output_string(|w| write_verifier_errors(w, &logs, 500_000));
+        let out = output_string(|w| write_verifier_errors(w, &logs, 500_000).map(|_| ()));
 
         // Should show "cycles collapsed" qualifier since cycles are detected
         assert!(
@@ -1797,7 +1731,7 @@ mod tests {
         // No cycles, no truncation → no qualifier
         let short_log = "0: R1=ctx()\n1: (95) exit\n";
         let logs = vec![make_log("pkg", None, "prog", short_log)];
-        let out = output_string(|w| write_verifier_errors(w, &logs, 100_000));
+        let out = output_string(|w| write_verifier_errors(w, &logs, 100_000).map(|_| ()));
         // The summary line should NOT contain any qualifier
         assert!(
             !out.contains("cycles collapsed") && !out.contains("truncated,"),
@@ -1811,7 +1745,7 @@ mod tests {
             log_push_cycle_iteration(&mut cyclic_log, i);
         }
         let logs = vec![make_log("pkg", None, "prog", &cyclic_log)];
-        let out = output_string(|w| write_verifier_errors(w, &logs, 100_000));
+        let out = output_string(|w| write_verifier_errors(w, &logs, 100_000).map(|_| ()));
         assert!(
             out.contains("cycles collapsed, "),
             "should have 'cycles collapsed' qualifier: {}",
