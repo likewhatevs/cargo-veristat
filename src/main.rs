@@ -3,6 +3,7 @@
 mod cli;
 mod discovery;
 mod extract;
+mod gfm;
 mod rodata;
 mod veristat;
 
@@ -208,7 +209,22 @@ fn run(args: cli::Args) -> Result<()> {
     runs.sort_by(|a, b| a.key.cmp(&b.key));
 
     // Run veristat
-    let all_passed = veristat::run_and_report(&runs, temp_dir.path())?;
+    let gfm_mode = args.gfm_mode();
+
+    let all_passed = if gfm_mode == cli::GfmMode::Off {
+        veristat::run_and_report(&runs, temp_dir.path())?
+    } else {
+        let results = veristat::execute_runs(&runs, temp_dir.path())?;
+        if results.is_empty() {
+            println!("No BPF objects to verify.");
+            true
+        } else {
+            let logs = veristat::collect_verifier_logs(&results);
+            let all_passed = veristat::print_report(&results, &logs, temp_dir.path())?;
+            gfm::report_gfm(gfm_mode, &results, &logs).context("Failed to write GFM report")?;
+            all_passed
+        }
+    };
 
     // Report build errors
     if !build_errors.is_empty() {

@@ -1,6 +1,13 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GfmMode {
+    Off,
+    Full,
+    ErrOnly,
+}
+
 #[derive(Parser)]
 #[command(name = "cargo", bin_name = "cargo")]
 pub enum Cargo {
@@ -24,6 +31,26 @@ pub struct Args {
     /// Build profile to use (e.g. release, ci). Defaults to dev.
     #[arg(long)]
     pub profile: Option<String>,
+
+    /// Emit GFM markdown to stderr for $GITHUB_STEP_SUMMARY.
+    #[arg(long)]
+    pub stderr_gfm: bool,
+
+    /// Like --stderr-gfm but uses ::debug:: for passing runs (hidden by default).
+    #[arg(long, conflicts_with = "stderr_gfm")]
+    pub stderr_gfm_erronly: bool,
+}
+
+impl Args {
+    pub(crate) fn gfm_mode(&self) -> GfmMode {
+        if self.stderr_gfm {
+            GfmMode::Full
+        } else if self.stderr_gfm_erronly {
+            GfmMode::ErrOnly
+        } else {
+            GfmMode::Off
+        }
+    }
 }
 
 #[cfg(test)]
@@ -122,5 +149,44 @@ mod tests {
     fn parse_no_profile_is_none() {
         let args = parse(&["cargo", "veristat"]);
         assert!(args.profile.is_none());
+    }
+
+    #[test]
+    fn parse_stderr_gfm() {
+        let args = parse(&["cargo", "veristat", "--stderr-gfm"]);
+        assert!(args.stderr_gfm);
+        assert!(!args.stderr_gfm_erronly);
+    }
+
+    #[test]
+    fn parse_stderr_gfm_erronly() {
+        let args = parse(&["cargo", "veristat", "--stderr-gfm-erronly"]);
+        assert!(!args.stderr_gfm);
+        assert!(args.stderr_gfm_erronly);
+    }
+
+    #[test]
+    fn parse_stderr_gfm_conflict() {
+        let result =
+            Cargo::try_parse_from(["cargo", "veristat", "--stderr-gfm", "--stderr-gfm-erronly"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn gfm_mode_off_by_default() {
+        let args = parse(&["cargo", "veristat"]);
+        assert_eq!(args.gfm_mode(), GfmMode::Off);
+    }
+
+    #[test]
+    fn gfm_mode_full() {
+        let args = parse(&["cargo", "veristat", "--stderr-gfm"]);
+        assert_eq!(args.gfm_mode(), GfmMode::Full);
+    }
+
+    #[test]
+    fn gfm_mode_erronly() {
+        let args = parse(&["cargo", "veristat", "--stderr-gfm-erronly"]);
+        assert_eq!(args.gfm_mode(), GfmMode::ErrOnly);
     }
 }

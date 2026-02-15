@@ -43,7 +43,12 @@ pub fn extract_bpf_objects(binary_path: &Path) -> Result<Vec<BpfObject>> {
         .data()
         .context("Failed to read .bpf.objs section data")?;
 
-    let objects = extract_via_symbols(&elf, bpf_section.address(), bpf_section.index(), section_data);
+    let objects = extract_via_symbols(
+        &elf,
+        bpf_section.address(),
+        bpf_section.index(),
+        section_data,
+    );
 
     if !objects.is_empty() {
         return Ok(objects);
@@ -374,11 +379,13 @@ mod tests {
 
     /// Build a minimal valid BPF ELF (ELF64 little-endian relocatable).
     fn build_mini_bpf_elf() -> Vec<u8> {
-        let mut obj =
-            WriteObject::new(BinaryFormat::Elf, Architecture::Sbf, Endianness::Little);
-        let section_id =
-            obj.add_section(vec![], b".text".to_vec(), object::SectionKind::Text);
-        obj.append_section_data(section_id, &[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 1); // BPF_EXIT
+        let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::Sbf, Endianness::Little);
+        let section_id = obj.add_section(vec![], b".text".to_vec(), object::SectionKind::Text);
+        obj.append_section_data(
+            section_id,
+            &[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            1,
+        ); // BPF_EXIT
         obj.write().unwrap()
     }
 
@@ -453,15 +460,20 @@ mod tests {
     #[test]
     fn extract_magic_ignores_internal_elf_bytes() {
         // A BPF ELF that happens to contain \x7fELF in its data section
-        let mut obj =
-            WriteObject::new(BinaryFormat::Elf, Architecture::Sbf, Endianness::Little);
-        let section_id =
-            obj.add_section(vec![], b".rodata".to_vec(), object::SectionKind::ReadOnlyData);
+        let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::Sbf, Endianness::Little);
+        let section_id = obj.add_section(
+            vec![],
+            b".rodata".to_vec(),
+            object::SectionKind::ReadOnlyData,
+        );
         // Embed \x7fELF inside rodata — should NOT cause a false split
         obj.append_section_data(section_id, b"\x7fELF_not_a_real_elf", 1);
-        let text_id =
-            obj.add_section(vec![], b".text".to_vec(), object::SectionKind::Text);
-        obj.append_section_data(text_id, &[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 1);
+        let text_id = obj.add_section(vec![], b".text".to_vec(), object::SectionKind::Text);
+        obj.append_section_data(
+            text_id,
+            &[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            1,
+        );
         let bpf_elf = obj.write().unwrap();
 
         let result = extract_via_magic(&bpf_elf);
@@ -516,7 +528,10 @@ mod tests {
 
         // Pass a bogus section_addr much higher than any symbol address
         let result = extract_via_symbols(&elf, u64::MAX, section_idx, section_data);
-        assert!(result.is_empty(), "should skip symbols with address < section_addr");
+        assert!(
+            result.is_empty(),
+            "should skip symbols with address < section_addr"
+        );
     }
 
     #[test]

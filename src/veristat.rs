@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+#[cfg(test)]
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,20 @@ pub(crate) struct VeristatRun {
 pub(crate) struct PackageVerdict {
     pub records: Vec<csv::StringRecord>,
     pub failed: bool,
+}
+
+pub(crate) struct RunResult {
+    pub key: RunKey,
+    pub headers: csv::StringRecord,
+    pub verdict: PackageVerdict,
+    pub objects: Vec<PathBuf>,
+    pub globals_path: Option<PathBuf>,
+}
+
+pub(crate) struct VerifierLog {
+    pub key: RunKey,
+    pub header: String,
+    pub log_body: String,
 }
 
 /// Build a mapping from object filename -> package name.
@@ -191,16 +206,14 @@ fn parse_run_csv(csv_text: &str) -> Result<(csv::StringRecord, PackageVerdict)> 
     Ok((headers, PackageVerdict { records, failed }))
 }
 
-/// Run veristat on a list of runs and report results.
+/// Execute veristat runs and collect structured results.
 ///
 /// Each `VeristatRun` specifies a set of BPF objects and optional globals.
-/// Returns true if all runs passed, false if any failed.
-pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
+pub(crate) fn execute_runs(runs: &[VeristatRun], temp_dir: &Path) -> Result<Vec<RunResult>> {
     let total_objects: usize = runs.iter().map(|r| r.objects.len()).sum();
 
     if total_objects == 0 {
-        println!("No BPF objects to verify.");
-        return Ok(true);
+        return Ok(Vec::new());
     }
 
     println!(
@@ -208,15 +221,6 @@ pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
         total_objects,
         runs.len()
     );
-
-    // Execute each run and collect results
-    struct RunResult {
-        key: RunKey,
-        headers: csv::StringRecord,
-        verdict: PackageVerdict,
-        objects: Vec<PathBuf>,
-        globals_path: Option<PathBuf>,
-    }
 
     let mut results: Vec<RunResult> = Vec::new();
 
@@ -292,10 +296,85 @@ pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
         });
     }
 
-    // Display per-run results
+    Ok(results)
+}
+
+/// Re-run veristat with `-v` on failing programs and return structured logs.
+pub(crate) fn collect_verifier_logs(results: &[RunResult]) -> Vec<VerifierLog> {
+    let mut logs = Vec::new();
+
+    for result in results {
+        if !result.verdict.failed {
+            continue;
+        }
+
+        let file_name_idx = result.headers.iter().position(|h| h == "file_name");
+        let verdict_idx = result.headers.iter().position(|h| h == "verdict");
+        let prog_name_idx = result.headers.iter().position(|h| h == "prog_name");
+
+        let (file_name_idx, verdict_idx) = match (file_name_idx, verdict_idx) {
+            (Some(f), Some(v)) => (f, v),
+            _ => continue,
+        };
+
+        let mut failed_by_object: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for record in &result.verdict.records {
+            let verdict = record.get(verdict_idx).unwrap_or("").to_lowercase();
+            if verdict == "success" {
+                continue;
+            }
+            let file_name = record.get(file_name_idx).unwrap_or("").to_string();
+            let prog_name = prog_name_idx
+                .and_then(|i| record.get(i))
+                .unwrap_or("")
+                .to_string();
+            if !prog_name.is_empty() {
+                failed_by_object
+                    .entry(file_name)
+                    .or_default()
+                    .push(prog_name);
+            }
+        }
+
+        for (file_name, progs) in &failed_by_object {
+            let csv_basename = Path::new(file_name)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(file_name);
+            let obj_path = result.objects.iter().find(|p| {
+                p.file_name()
+                    .and_then(|f| f.to_str())
+                    .is_some_and(|f| f == csv_basename)
+            });
+            if let Some(obj_path) = obj_path {
+                for (header, log_body) in
+                    run_verbose_veristat(obj_path, progs, result.globals_path.as_deref())
+                {
+                    logs.push(VerifierLog {
+                        key: result.key.clone(),
+                        header,
+                        log_body,
+                    });
+                }
+            }
+        }
+    }
+
+    logs
+}
+
+/// Print human-readable report to stdout.
+///
+/// Returns true if all runs passed, false if any failed.
+pub(crate) fn print_report(
+    results: &[RunResult],
+    logs: &[VerifierLog],
+    temp_dir: &Path,
+) -> Result<bool> {
     let mut all_passed = true;
 
-    for result in &results {
+    for result in results {
         let status = if result.verdict.failed {
             "FAILED"
         } else {
@@ -331,9 +410,7 @@ pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
                 // Fallback: print records manually
                 for record in &result.verdict.records {
                     let fname = record.get(file_name_idx).unwrap_or("?");
-                    let prog = prog_name_idx
-                        .and_then(|i| record.get(i))
-                        .unwrap_or("?");
+                    let prog = prog_name_idx.and_then(|i| record.get(i)).unwrap_or("?");
                     let verdict_str = record.get(verdict_idx).unwrap_or("?");
                     println!("  {} / {} : {}", fname, prog, verdict_str);
                 }
@@ -341,59 +418,12 @@ pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
         }
     }
 
-    // Re-run veristat with -v on failing programs to get verifier error logs.
-    // Each run is re-run with its own globals so verifier logs match the
-    // actual failure conditions.
-    let has_failures = results.iter().any(|r| r.verdict.failed);
-    if has_failures {
+    // Print verifier error logs
+    if !logs.is_empty() {
         println!("\n=== Verifier Logs ===");
-        for result in &results {
-            if !result.verdict.failed {
-                continue;
-            }
-
-            let file_name_idx = result.headers.iter().position(|h| h == "file_name");
-            let verdict_idx = result.headers.iter().position(|h| h == "verdict");
-            let prog_name_idx = result.headers.iter().position(|h| h == "prog_name");
-
-            let (file_name_idx, verdict_idx) = match (file_name_idx, verdict_idx) {
-                (Some(f), Some(v)) => (f, v),
-                _ => continue,
-            };
-
-            let mut failed_by_object: HashMap<String, Vec<String>> = HashMap::new();
-            for record in &result.verdict.records {
-                let verdict = record.get(verdict_idx).unwrap_or("").to_lowercase();
-                if verdict == "success" {
-                    continue;
-                }
-                let file_name = record.get(file_name_idx).unwrap_or("").to_string();
-                let prog_name = prog_name_idx
-                    .and_then(|i| record.get(i))
-                    .unwrap_or("")
-                    .to_string();
-                if !prog_name.is_empty() {
-                    failed_by_object
-                        .entry(file_name)
-                        .or_default()
-                        .push(prog_name);
-                }
-            }
-
-            for (file_name, progs) in &failed_by_object {
-                let csv_basename = Path::new(file_name)
-                    .file_name()
-                    .and_then(|f| f.to_str())
-                    .unwrap_or(file_name);
-                let obj_path = result.objects.iter().find(|p| {
-                    p.file_name()
-                        .and_then(|f| f.to_str())
-                        .is_some_and(|f| f == csv_basename)
-                });
-                if let Some(obj_path) = obj_path {
-                    print_verifier_logs(obj_path, progs, result.globals_path.as_deref());
-                }
-            }
+        for log in logs {
+            println!("\nPROCESSING {}", log.header);
+            println!("{}", log.log_body);
         }
     }
 
@@ -404,7 +434,7 @@ pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
         .map(|r| r.key.to_string().len() + 1) // +1 for colon
         .max()
         .unwrap_or(0);
-    for result in &results {
+    for result in results {
         let label = format!("{}:", result.key);
         let status = if result.verdict.failed {
             "\x1b[1;5;31mFAIL \u{1F4A5}\x1b[0m"
@@ -427,6 +457,20 @@ pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
     }
 
     Ok(all_passed)
+}
+
+/// Run veristat on a list of runs and report results.
+///
+/// Each `VeristatRun` specifies a set of BPF objects and optional globals.
+/// Returns true if all runs passed, false if any failed.
+pub fn run_and_report(runs: &[VeristatRun], temp_dir: &Path) -> Result<bool> {
+    let results = execute_runs(runs, temp_dir)?;
+    if results.is_empty() {
+        println!("No BPF objects to verify.");
+        return Ok(true);
+    }
+    let logs = collect_verifier_logs(&results);
+    print_report(&results, &logs, temp_dir)
 }
 
 /// Write a per-package CSV file from grouped records.
@@ -504,8 +548,8 @@ fn extract_failure_logs(veristat_output: &str) -> Vec<(String, String)> {
         let header = chunk.lines().next().unwrap_or("").to_string();
         let mut log_lines = Vec::new();
         for line in chunk.lines().skip(1) {
-            // Stop at the results table
-            if line.starts_with("File") || line.starts_with("---") {
+            // Stop at the results table (header is "File ... Program ... Verdict")
+            if (line.starts_with("File") && line.contains("Verdict")) || line.starts_with("---") {
                 break;
             }
             log_lines.push(line);
@@ -516,14 +560,16 @@ fn extract_failure_logs(veristat_output: &str) -> Vec<(String, String)> {
     results
 }
 
-/// Re-run veristat with `-v` on specific failing programs to print verifier logs.
+/// Re-run veristat with `-v` on specific failing programs and return structured logs.
 ///
-/// This gives users the actual verifier error messages (e.g. "R0 invalid mem
-/// access 'map_value_or_null'") rather than just a "failure" verdict.
-///
+/// Returns `(header_line, log_body)` pairs for each failing program.
 /// When `globals_path` is provided, tries running with globals first. If that
 /// fails (globals not applicable to this object), falls back to running without.
-fn print_verifier_logs(obj_path: &Path, prog_names: &[String], globals_path: Option<&Path>) {
+fn run_verbose_veristat(
+    obj_path: &Path,
+    prog_names: &[String],
+    globals_path: Option<&Path>,
+) -> Vec<(String, String)> {
     let run_verbose = |globals: Option<&Path>| -> std::io::Result<std::process::Output> {
         let mut cmd = Command::new("veristat");
         cmd.arg("-v");
@@ -544,20 +590,17 @@ fn print_verifier_logs(obj_path: &Path, prog_names: &[String], globals_path: Opt
             Ok(o) => o,
             Err(e) => {
                 eprintln!("warning: failed to retrieve verifier logs: {}", e);
-                return;
+                return Vec::new();
             }
         },
         Err(e) => {
             eprintln!("warning: failed to retrieve verifier logs: {}", e);
-            return;
+            return Vec::new();
         }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for (header, log) in extract_failure_logs(&stdout) {
-        println!("\nPROCESSING {}", header);
-        println!("{}", log);
-    }
+    extract_failure_logs(&stdout)
 }
 
 /// Print a failure banner that's hard to miss.
@@ -997,6 +1040,30 @@ File  Prog  Verdict\n";
 
         let logs = extract_failure_logs(output);
         assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn extract_failure_logs_preserves_file_in_log() {
+        // A verifier log line starting with "File" but not containing "Verdict"
+        // should NOT be treated as the results table header.
+        let output = "\
+PROCESSING obj/prog, DURATION US: 10, VERDICT: failure, VERIFIER LOG:\n\
+0: R1=ctx()\n\
+File offset 0x1234 references something\n\
+R0 invalid mem access\n\
+File         Program   Verdict\n\
+-----------  --------  -------\n";
+
+        let logs = extract_failure_logs(output);
+        assert_eq!(logs.len(), 1);
+        assert!(
+            logs[0].1.contains("File offset 0x1234"),
+            "log line starting with 'File' should be preserved: {}",
+            logs[0].1
+        );
+        assert!(logs[0].1.contains("R0 invalid mem access"));
+        // Table header should NOT be in the log
+        assert!(!logs[0].1.contains("Verdict"));
     }
 
     // --- Integration tests (require clang + veristat + CAP_BPF) ---

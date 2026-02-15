@@ -30,6 +30,9 @@ sudo cargo veristat scx_layered scx_rusty
 
 # Verify packages in another workspace
 sudo cargo veristat --manifest-path /path/to/Cargo.toml scx_layered
+
+# Build with a specific profile
+sudo cargo veristat --profile release scx_layered
 ```
 
 For each package, `cargo veristat` will:
@@ -107,6 +110,27 @@ sudo cargo veristat --rodata dump.json scx_layered
 BPF's `RESIZABLE_ARRAY` macro creates `.data.X` / `.bss.X` sections with a 1-byte placeholder. The corresponding `X_len` variable in `.rodata` tells userspace how large the map is, but veristat can't resize maps — so setting `X_len` to a large value while the map stays at 1 byte causes false verification failures.
 
 `cargo veristat` automatically detects these sections in the ELF objects and excludes the corresponding `_len` variables from globals. This applies to both auto-discovered configs and `--rodata`.
+
+## GitHub Actions integration
+
+`--stderr-gfm` and `--stderr-gfm-erronly` emit a GFM markdown report to stderr (suitable for `$GITHUB_STEP_SUMMARY`) and GitHub Actions workflow commands to stdout.
+
+```sh
+# Full mode: ::notice for passing runs, ::error for failures
+sudo cargo veristat --stderr-gfm --profile ci scx_layered 2>> "$GITHUB_STEP_SUMMARY"
+
+# Error-only mode: ::debug for passing runs (hidden by default), ::error for failures
+sudo cargo veristat --stderr-gfm-erronly --profile ci scx_layered 2>> "$GITHUB_STEP_SUMMARY"
+```
+
+The GFM report includes:
+
+1. A summary table with per-program pass/fail and instruction counts
+2. System info (kernel version, git commit)
+3. Truncated verifier error logs for failing programs (expanded by default)
+4. Full verifier logs in collapsed sections (when logs exceed 40 lines)
+
+The two flags are mutually exclusive. Normal stdout output (human-readable tables, verifier logs) is produced regardless.
 
 ## Disabling veristat for a package
 
