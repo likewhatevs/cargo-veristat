@@ -695,11 +695,14 @@ pub(crate) fn report_gfm(mode: GfmMode, results: &[RunResult], logs: &[VerifierL
             }
         })
         .collect();
-    let info = SystemInfo::detect(&packages);
+    let any_failed = results.iter().any(|r| r.verdict.failed);
 
-    let mut stderr = std::io::stderr().lock();
-    write_gfm_report(&mut stderr, &info, results, logs)
-        .context("Failed to write GFM report to stderr")?;
+    if mode != GfmMode::ErrOnly || any_failed {
+        let info = SystemInfo::detect(&packages);
+        let mut stderr = std::io::stderr().lock();
+        write_gfm_report(&mut stderr, &info, results, logs)
+            .context("Failed to write GFM report to stderr")?;
+    }
 
     let mut stdout = std::io::stdout().lock();
     emit_workflow_commands(&mut stdout, mode, results)
