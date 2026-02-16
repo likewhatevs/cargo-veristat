@@ -877,12 +877,7 @@ mod tests {
     fn gfm_report_no_full_logs_when_not_truncated() {
         // 50-line log fits within the per-log byte budget, so no full logs section
         let body: String = (0..50).map(|i| format!("line {}\n", i)).collect();
-        let logs = vec![make_log(
-            "scx_layered",
-            Some("8_layers"),
-            "bad_prog",
-            &body,
-        )];
+        let logs = vec![make_log("scx_layered", Some("8_layers"), "bad_prog", &body)];
         let results = vec![make_result(
             "scx_layered",
             Some("8_layers"),
@@ -895,7 +890,6 @@ mod tests {
         // All 50 lines fit in the errors section — no truncation, so no full logs
         assert!(!out.contains("### Full Verifier Logs"));
     }
-
 
     // --- Workflow command tests ---
 
