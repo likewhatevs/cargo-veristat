@@ -44,6 +44,52 @@ For each package, `cargo veristat` will:
 
 Verifier logs have repeating cycles collapsed by default for readability. Use `--raw` to disable cycle collapse and see the full unprocessed verifier output.
 
+## Cycle collapse
+
+BPF verifier logs for loop-heavy programs can be enormous — the verifier unrolls loops and prints every iteration, producing thousands of nearly-identical lines that differ only in register state annotations. `cargo veristat` detects these repeating blocks and collapses them, keeping the first and last iteration so you can see the entry state and final state while skipping the repetitive middle.
+
+The detection works by normalizing lines (stripping variable register annotations like `; R3_w=42`), finding the most frequently repeated line as an anchor, then computing the cycle period and count via stride-based gap analysis. Nested loops are handled by running up to 5 collapse passes. A cycle must repeat at least 6 times to be collapsed.
+
+For example, a log like:
+
+```
+0: (b7) r1 = 0
+; loop body @ balance.bpf.c:390
+100: (07) r3 += 1  ; frame1: R3_w=0
+101: (85) call helper#1
+102: (05) goto pc-4
+; loop body @ balance.bpf.c:390
+100: (07) r3 += 1  ; frame1: R3_w=1
+101: (85) call helper#1
+102: (05) goto pc-4
+  ... (200 more identical iterations) ...
+; loop body @ balance.bpf.c:390
+100: (07) r3 += 1  ; frame1: R3_w=202
+101: (85) call helper#1
+102: (05) goto pc-4
+200: (95) exit
+```
+
+becomes:
+
+```
+0: (b7) r1 = 0
+--- 203x of the following 4 lines ---
+; loop body @ balance.bpf.c:390
+100: (07) r3 += 1  ; frame1: R3_w=0
+101: (85) call helper#1
+102: (05) goto pc-4
+--- 201 identical iterations omitted ---
+; loop body @ balance.bpf.c:390
+100: (07) r3 += 1  ; frame1: R3_w=202
+101: (85) call helper#1
+102: (05) goto pc-4
+--- end repeat ---
+200: (95) exit
+```
+
+If cycle collapse alone doesn't shrink a log enough for the GFM size budget, a top+bottom byte-budget truncation is applied — the beginning and end of the log are kept (where the most useful context typically lives) and the middle is cut with a `lines omitted` marker.
+
 ## Rodata configurations
 
 BPF programs often use `.rodata` globals (e.g. `nr_layers`, `smt_enabled`) that change which code paths the verifier explores. `cargo veristat` supports testing multiple rodata configurations to catch verification failures that only occur with specific settings.
@@ -129,8 +175,8 @@ The GFM report includes:
 
 1. A summary table with per-program pass/fail and instruction counts
 2. System info (kernel version, git commit)
-3. Truncated verifier error logs for failing programs (expanded by default)
-4. Full verifier logs in collapsed sections (when logs exceed 40 lines)
+3. Verifier error logs for failing programs (cycle-collapsed and truncated to fit a 1MB size budget, expanded by default)
+4. Full untruncated verifier logs in collapsed sections (included when they fit within the remaining budget)
 
 The two flags are mutually exclusive. Normal stdout output (human-readable tables, verifier logs) is produced regardless.
 
