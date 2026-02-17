@@ -91,39 +91,55 @@ fn run(args: cli::Args) -> Result<()> {
             println!("{} is up to date, skipping build.", pkg.name);
         }
 
-        // Extract BPF objects
-        match extract::extract_bpf_objects(&binary_path) {
-            Ok(bpf_objects) => {
-                if bpf_objects.is_empty() {
-                    continue;
-                }
-
-                let mut paths = Vec::new();
-                for obj in &bpf_objects {
-                    // Use {package}_{name}.bpf.o to ensure unique basenames
-                    let filename = format!("{}_{}.bpf.o", pkg.name, obj.name);
-                    let obj_path = temp_dir.path().join(&filename);
-                    std::fs::write(&obj_path, &obj.data).with_context(|| {
-                        format!("Failed to write BPF object: {}", obj_path.display())
-                    })?;
-                    paths.push(obj_path);
-                }
-
-                println!(
-                    "  Extracted {} BPF object(s) from {}",
-                    paths.len(),
-                    pkg.name
-                );
-                objects_by_package.insert(pkg.name.clone(), paths);
-            }
+        // Extract BPF objects — try .bpf.objs section first, then skeleton fallback
+        let bpf_objects = match extract::extract_bpf_objects(&binary_path) {
+            Ok(objs) => objs,
             Err(e) => {
                 eprintln!(
                     "error: failed to extract BPF objects from {}: {:#}",
                     pkg.name, e
                 );
                 build_errors.push(pkg.name.clone());
+                continue;
             }
+        };
+
+        let bpf_objects = if bpf_objects.is_empty() {
+            match extract::find_skeleton_objects(&target_dir, &profile_dir, &pkg.name) {
+                Ok(objs) => objs,
+                Err(e) => {
+                    eprintln!(
+                        "error: failed to extract skeleton objects for {}: {:#}",
+                        pkg.name, e
+                    );
+                    build_errors.push(pkg.name.clone());
+                    continue;
+                }
+            }
+        } else {
+            bpf_objects
+        };
+
+        if bpf_objects.is_empty() {
+            continue;
         }
+
+        let mut paths = Vec::new();
+        for obj in &bpf_objects {
+            let filename = format!("{}_{}.bpf.o", pkg.name, obj.name);
+            let obj_path = temp_dir.path().join(&filename);
+            std::fs::write(&obj_path, &obj.data).with_context(|| {
+                format!("Failed to write BPF object: {}", obj_path.display())
+            })?;
+            paths.push(obj_path);
+        }
+
+        println!(
+            "  Extracted {} BPF object(s) from {}",
+            paths.len(),
+            pkg.name
+        );
+        objects_by_package.insert(pkg.name.clone(), paths);
     }
 
     if objects_by_package.is_empty() {

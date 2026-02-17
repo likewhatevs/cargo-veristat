@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use object::{Object, ObjectSection, ObjectSymbol};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 pub struct BpfObject {
     pub name: String,
@@ -203,6 +204,156 @@ fn extract_via_magic(section_data: &[u8]) -> Vec<BpfObject> {
     }
 
     objects
+}
+
+const SKEL_DATA_PREFIX: &str = "const DATA: &[u8] = &[";
+
+/// Extract a BPF object from a `*.skel.rs` skeleton file.
+///
+/// libbpf-cargo (<= 0.25) embeds BPF object bytes as
+/// `const DATA: &[u8] = &[127, 69, 76, 70, ...];` in generated skeleton files.
+/// This function parses that byte array back into raw BPF object data.
+/// Newer libbpf-cargo uses `include_bytes!` with a `.bpf.objs` link section,
+/// which is handled by [`extract_bpf_objects`] instead.
+pub fn extract_from_skeleton(skel_path: &Path) -> Result<Option<BpfObject>> {
+    let content = std::fs::read_to_string(skel_path)
+        .with_context(|| format!("Failed to read skeleton: {}", skel_path.display()))?;
+
+    let Some(start) = content.find(SKEL_DATA_PREFIX) else {
+        return Ok(None);
+    };
+    let rest = &content[start + SKEL_DATA_PREFIX.len()..];
+
+    // Single-pass parse: consume digits/commas/whitespace, stop at ']'.
+    // Anything else means this isn't a byte-array literal we understand.
+    let mut data = Vec::new();
+    let mut acc: Option<u32> = None;
+    let mut found_close = false;
+
+    for ch in rest.chars() {
+        match ch {
+            ']' => {
+                if let Some(v) = acc {
+                    anyhow::ensure!(v <= 255, "Value {} exceeds u8 in {}", v, skel_path.display());
+                    data.push(v as u8);
+                }
+                found_close = true;
+                break;
+            }
+            ',' => {
+                if let Some(v) = acc {
+                    anyhow::ensure!(v <= 255, "Value {} exceeds u8 in {}", v, skel_path.display());
+                    data.push(v as u8);
+                    acc = None;
+                }
+            }
+            '0'..='9' => {
+                let digit = (ch as u32) - b'0' as u32;
+                acc = Some(acc.unwrap_or(0) * 10 + digit);
+            }
+            c if c.is_ascii_whitespace() => {}
+            _ => anyhow::bail!(
+                "Unexpected character '{}' in DATA array in {}",
+                ch,
+                skel_path.display()
+            ),
+        }
+    }
+
+    anyhow::ensure!(
+        found_close,
+        "Unclosed DATA array in {}",
+        skel_path.display()
+    );
+
+    let stem = skel_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    let name = stem.strip_suffix(".skel").unwrap_or(stem).to_string();
+
+    Ok(Some(BpfObject { name, data }))
+}
+
+/// Find skeleton files in the cargo build directory and extract BPF objects.
+///
+/// Scans `{target_dir}/{profile_dir}/build/{pkg_name}-*/out/*.skel.rs`.
+/// When multiple build dirs contain the same skeleton name, the newest by
+/// mtime wins (handles stale build directories).
+pub fn find_skeleton_objects(
+    target_dir: &Path,
+    profile_dir: &str,
+    pkg_name: &str,
+) -> Result<Vec<BpfObject>> {
+    let build_dir = target_dir.join(profile_dir).join("build");
+    let prefix = format!("{}-", pkg_name);
+
+    let entries = match std::fs::read_dir(&build_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(vec![]),
+    };
+
+    // Collect candidate skeleton files grouped by stem, keeping newest mtime
+    let mut best: HashMap<String, PathBuf> = HashMap::new();
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let dir_name = entry.file_name();
+        let dir_name = dir_name.to_string_lossy();
+        if !dir_name.starts_with(&prefix) {
+            continue;
+        }
+
+        let out_dir = entry.path().join("out");
+        let out_entries = match std::fs::read_dir(&out_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for file in out_entries.filter_map(|e| e.ok()) {
+            let fname = file.file_name();
+            let fname = fname.to_string_lossy();
+            if !fname.ends_with(".skel.rs") {
+                continue;
+            }
+
+            let stem = fname.strip_suffix(".skel.rs").unwrap().to_string();
+            let path = file.path();
+
+            let dominated = best.get(&stem).is_some_and(|existing| {
+                let existing_mtime = std::fs::metadata(existing)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                let new_mtime = std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                new_mtime <= existing_mtime
+            });
+
+            if !dominated {
+                best.insert(stem, path);
+            }
+        }
+    }
+
+    let mut objects = Vec::new();
+    let mut paths: Vec<_> = best.into_values().collect();
+    paths.sort();
+
+    for path in paths {
+        match extract_from_skeleton(&path) {
+            Ok(Some(obj)) => objects.push(obj),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to extract from skeleton {}: {:#}",
+                    path.display(),
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(objects)
 }
 
 #[cfg(test)]
@@ -555,5 +706,102 @@ mod tests {
     fn friendly_name_hash_suffix_unchanged() {
         let name = "h5208f5a69f77cebb";
         assert_eq!(friendly_name(name), name);
+    }
+
+    // -- skeleton extraction tests --
+
+    fn write_skel(dir: &Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn extract_from_skeleton_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        // ELF magic: 127=0x7f, 69='E', 76='L', 70='F'
+        let content = "const DATA: &[u8] = &[127, 69, 76, 70, 1, 2, 3];";
+        let path = write_skel(dir.path(), "prog.skel.rs", content);
+
+        let obj = extract_from_skeleton(&path).unwrap().unwrap();
+        assert_eq!(obj.data, vec![127, 69, 76, 70, 1, 2, 3]);
+        assert_eq!(obj.name, "prog");
+    }
+
+    #[test]
+    fn extract_from_skeleton_no_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "pub struct ProgSkel { /* no DATA const */ }";
+        let path = write_skel(dir.path(), "empty.skel.rs", content);
+
+        assert!(extract_from_skeleton(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn extract_from_skeleton_overflow_value_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "const DATA: &[u8] = &[256];";
+        let path = write_skel(dir.path(), "bad.skel.rs", content);
+
+        assert!(extract_from_skeleton(&path).is_err());
+    }
+
+    #[test]
+    fn extract_from_skeleton_unexpected_char_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "const DATA: &[u8] = &[127, 0x45];";
+        let path = write_skel(dir.path(), "hex.skel.rs", content);
+
+        assert!(extract_from_skeleton(&path).is_err());
+    }
+
+    #[test]
+    fn extract_from_skeleton_unclosed_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "const DATA: &[u8] = &[127, 69";
+        let path = write_skel(dir.path(), "open.skel.rs", content);
+
+        assert!(extract_from_skeleton(&path).is_err());
+    }
+
+    #[test]
+    fn extract_from_skeleton_name_from_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "const DATA: &[u8] = &[42];";
+        let path = write_skel(dir.path(), "foo.skel.rs", content);
+
+        let obj = extract_from_skeleton(&path).unwrap().unwrap();
+        assert_eq!(obj.name, "foo");
+    }
+
+    #[test]
+    fn find_skeleton_objects_picks_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let build = dir.path().join("debug").join("build");
+
+        // Older build dir
+        let old_out = build.join("mypkg-aaa111").join("out");
+        std::fs::create_dir_all(&old_out).unwrap();
+        write_skel(&old_out, "sched.skel.rs", "const DATA: &[u8] = &[10];");
+
+        // Small sleep so mtime differs
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Newer build dir
+        let new_out = build.join("mypkg-bbb222").join("out");
+        std::fs::create_dir_all(&new_out).unwrap();
+        write_skel(&new_out, "sched.skel.rs", "const DATA: &[u8] = &[20];");
+
+        let objects = find_skeleton_objects(dir.path(), "debug", "mypkg").unwrap();
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].name, "sched");
+        assert_eq!(objects[0].data, vec![20]);
+    }
+
+    #[test]
+    fn find_skeleton_objects_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let objects = find_skeleton_objects(dir.path(), "debug", "nonexistent").unwrap();
+        assert!(objects.is_empty());
     }
 }
