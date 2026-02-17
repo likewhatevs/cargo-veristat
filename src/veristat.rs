@@ -1280,8 +1280,23 @@ File         Program   Verdict\n\
     /// Dump a BPF map to a JSON file via bpftool.
     #[cfg(feature = "integration")]
     fn bpftool_dump_map(map_id: u32, out_path: &Path) {
+        bpftool_dump_map_flags(map_id, out_path, &["-j"]);
+    }
+
+    /// Dump a BPF map to a JSON file via bpftool (plain BTF format, no `-j`).
+    ///
+    /// Without `-j`, bpftool outputs decoded BTF directly under `value`
+    /// (no `formatted` wrapper, no hex arrays). This is Format 2.
+    #[cfg(feature = "integration")]
+    fn bpftool_dump_map_plain(map_id: u32, out_path: &Path) {
+        bpftool_dump_map_flags(map_id, out_path, &[]);
+    }
+
+    #[cfg(feature = "integration")]
+    fn bpftool_dump_map_flags(map_id: u32, out_path: &Path, flags: &[&str]) {
         let output = Command::new("bpftool")
-            .args(["map", "dump", "id", &map_id.to_string(), "-j"])
+            .args(["map", "dump", "id", &map_id.to_string()])
+            .args(flags)
             .output()
             .expect("bpftool map dump failed");
         assert!(
@@ -1432,6 +1447,75 @@ File         Program   Verdict\n\
              baseline={}, modified={}",
             insns_baseline,
             insns_modified
+        );
+    }
+
+    /// Same as `integration_roundtrip_rodata` but uses `bpftool map dump` without
+    /// `-j` (Format 2: decoded values directly under `value`, no `formatted` wrapper).
+    #[test]
+    #[cfg(feature = "integration")]
+    fn integration_roundtrip_rodata_direct_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let obj = tmp.path().join("roundtrip.bpf.o");
+        compile_bpf(&bpf_src("roundtrip.bpf.c"), &obj);
+
+        let pin_path = format!("/sys/fs/bpf/cargo_veristat_test_dv_{}", std::process::id());
+        let _guard = bpftool_load(&obj, &pin_path);
+
+        let map_ids = bpftool_get_map_ids(&pin_path);
+        let mut globals = Vec::new();
+        let mut datasecs_found = 0;
+
+        for (i, &id) in map_ids.iter().enumerate() {
+            let dump_path = tmp.path().join(format!("map_dv_{}.json", i));
+            bpftool_dump_map_plain(id, &dump_path);
+            match crate::rodata::parse_rodata(&dump_path) {
+                Ok(parsed) if !parsed.is_empty() => {
+                    globals.extend(parsed);
+                    datasecs_found += 1;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            datasecs_found >= 3,
+            "expected .rodata, .data, and .bss maps from plain format, found {} datasecs",
+            datasecs_found
+        );
+
+        // Spot-check key values survived the round-trip with Format 2
+        assert!(
+            globals.iter().any(|g| g == "big_val = 5000000001"),
+            "missing .rodata u64 'big_val' in plain format: {:?}",
+            globals
+        );
+        assert!(
+            globals.iter().any(|g| g == "data_counter = 137"),
+            "missing .data 'data_counter' in plain format: {:?}",
+            globals
+        );
+        assert!(
+            globals.iter().any(|g| g == "bss_state = 0"),
+            "missing .bss 'bss_state' in plain format: {:?}",
+            globals
+        );
+
+        // Lossless round-trip: globals from plain format feed back to veristat identically
+        let csv_baseline =
+            run_veristat_csv(&[obj.clone()], None).expect("veristat failed without globals");
+        let insns_baseline = get_total_insns(&csv_baseline);
+
+        let globals_path = write_globals_file(tmp.path(), &globals, "roundtrip_dv").unwrap();
+        let csv_roundtrip = run_veristat_csv(&[obj], Some(&globals_path))
+            .expect("veristat failed with plain-format round-trip globals");
+        let insns_roundtrip = get_total_insns(&csv_roundtrip);
+
+        assert_eq!(
+            insns_baseline, insns_roundtrip,
+            "plain-format round-trip globals should produce identical verification: \
+             baseline={}, roundtrip={}",
+            insns_baseline, insns_roundtrip
         );
     }
 }

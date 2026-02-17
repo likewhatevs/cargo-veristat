@@ -14,9 +14,16 @@ pub struct RodataConfig {
 
 /// Parse a bpftool rodata JSON dump and return veristat `-G` lines.
 ///
-/// Supports the real bpftool format:
+/// Supports two bpftool output formats:
+///
+/// **Format 1** (`bpftool map dump -j`): decoded values under `formatted.value`:
 /// ```json
 /// [{"key": [...], "value": [...], "formatted": {"value": {".rodata": [...]}}}]
+/// ```
+///
+/// **Format 2** (`bpftool map dump` without `-j`): decoded values directly under `value`:
+/// ```json
+/// [{"value": {".rodata": [...]}}]
 /// ```
 ///
 /// Returns lines like `var = 42`, `arr[0] = 1`, etc.
@@ -183,12 +190,20 @@ fn global_var_base_name(line: &str) -> &str {
 
 /// Extract variable entries from any BTF datasec in bpftool JSON.
 ///
-/// bpftool outputs BTF-decoded fields under `formatted.value.<section>`,
-/// where `<section>` is `.rodata`, `.data`, `.bss`, or any other datasec.
-/// The top-level `value` key contains raw hex bytes, not the decoded data.
+/// Tries `formatted.value.<section>` first (Format 1, `-j` flag), then
+/// falls back to `value.<section>` as an object (Format 2, no `-j`).
+/// If `value` is an array (raw hex bytes), `as_object()` returns `None`
+/// and the fallback is correctly skipped.
 fn extract_datasec_entries(root: &Value) -> Option<Vec<&Value>> {
     let first = root.as_array()?.first()?;
-    let sections = first.get("formatted")?.get("value")?.as_object()?;
+
+    let sections = first
+        .get("formatted")
+        .and_then(|f| f.get("value"))
+        .and_then(|v| v.as_object())
+        .or_else(|| first.get("value").and_then(|v| v.as_object()));
+
+    let sections = sections?;
 
     let mut entries = Vec::new();
     for section in sections.values() {
@@ -204,7 +219,7 @@ fn parse_rodata_json(json: &str) -> Result<Vec<String>> {
     let root: Value = serde_json::from_str(json).context("Failed to parse globals JSON")?;
 
     let entries = extract_datasec_entries(&root)
-        .context("Unexpected bpftool JSON structure: expected [{\"formatted\": {\"value\": {\"<section>\": [...]}}}]")?;
+        .context("Unexpected bpftool JSON structure: expected [{\"formatted\": {\"value\": {\"<section>\": [...]}}}] or [{\"value\": {\"<section>\": [...]}}]")?;
 
     let mut lines = Vec::new();
 
@@ -879,6 +894,87 @@ mod tests {
 
         let result = discover_configs(dir.path(), "veristat", &HashSet::new());
         assert!(result.is_err());
+    }
+
+    /// Build Format 2 JSON: `value` is an object with decoded sections (no `formatted` wrapper).
+    fn direct_value_json(section: &str, entries: &str) -> String {
+        format!(r#"[{{"value": {{"{section}": [{entries}]}}}}]"#)
+    }
+
+    #[test]
+    fn direct_value_rodata_parsed() {
+        let json = direct_value_json(".rodata", r#"{"nr_layers": 137}"#);
+        assert_eq!(parse(&json), vec!["nr_layers = 137"]);
+    }
+
+    #[test]
+    fn direct_value_multiple_sections() {
+        let json = r#"[{"value": {
+            ".rodata": [{"nr_layers": 137}],
+            ".data": [{"counter": 8642}]
+        }}]"#;
+        let result = parse(json);
+        assert!(result.contains(&"nr_layers = 137".to_string()));
+        assert!(result.contains(&"counter = 8642".to_string()));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn direct_value_real_rsched_dump() {
+        // Subset of a real rsched bpftool map dump (Format 2)
+        let json = r#"[{"value": {
+            ".rodata": [
+                {"nr_layers": 6},
+                {"smt_enabled": true},
+                {"__sibling_cpu": [-1, 0, -1, 2]},
+                {"slice_ns": 5000000001}
+            ]
+        }}]"#;
+        assert_eq!(
+            parse(json),
+            vec![
+                "nr_layers = 6",
+                "smt_enabled = 1",
+                "__sibling_cpu[0] = -1",
+                "__sibling_cpu[1] = 0",
+                "__sibling_cpu[2] = -1",
+                "__sibling_cpu[3] = 2",
+                "slice_ns = 5000000001",
+            ]
+        );
+    }
+
+    #[test]
+    fn raw_hex_value_without_formatted_errors() {
+        // Format 1 with raw hex `value` array but NO `formatted` key → error
+        let json = r#"[{"key": ["0x00"], "value": ["0x04","0x00"]}]"#;
+        let result = parse_rodata_json(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn formatted_preferred_over_direct_value() {
+        // When both `formatted.value` and `value` (object) exist, prefer `formatted`
+        let json = r#"[{
+            "value": {".rodata": [{"wrong": 999}]},
+            "formatted": {"value": {".rodata": [{"right": 137}]}}
+        }]"#;
+        assert_eq!(parse(json), vec!["right = 137"]);
+    }
+
+    #[test]
+    fn direct_value_bss_section() {
+        let json = direct_value_json(".bss", r#"{"zeroed": 0}, {"flag": false}"#);
+        assert_eq!(parse(&json), vec!["zeroed = 0", "flag = 0"]);
+    }
+
+    #[test]
+    fn direct_value_dotted_names_skipped() {
+        let json = direct_value_json(
+            ".rodata",
+            r#"{"nr_layers": 137}, {"match_layer.____fmt": "MATCH %s"}, {"smt_enabled": true}"#,
+        );
+        assert_eq!(parse(&json), vec!["nr_layers = 137", "smt_enabled = 1"]);
     }
 
     #[test]
