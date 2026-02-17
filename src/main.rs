@@ -128,9 +128,8 @@ fn run(args: cli::Args) -> Result<()> {
         for obj in &bpf_objects {
             let filename = format!("{}_{}.bpf.o", pkg.name, obj.name);
             let obj_path = temp_dir.path().join(&filename);
-            std::fs::write(&obj_path, &obj.data).with_context(|| {
-                format!("Failed to write BPF object: {}", obj_path.display())
-            })?;
+            std::fs::write(&obj_path, &obj.data)
+                .with_context(|| format!("Failed to write BPF object: {}", obj_path.display()))?;
             paths.push(obj_path);
         }
 

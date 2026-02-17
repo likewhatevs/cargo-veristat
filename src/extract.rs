@@ -234,7 +234,12 @@ pub fn extract_from_skeleton(skel_path: &Path) -> Result<Option<BpfObject>> {
         match ch {
             ']' => {
                 if let Some(v) = acc {
-                    anyhow::ensure!(v <= 255, "Value {} exceeds u8 in {}", v, skel_path.display());
+                    anyhow::ensure!(
+                        v <= 255,
+                        "Value {} exceeds u8 in {}",
+                        v,
+                        skel_path.display()
+                    );
                     data.push(v as u8);
                 }
                 found_close = true;
@@ -242,7 +247,12 @@ pub fn extract_from_skeleton(skel_path: &Path) -> Result<Option<BpfObject>> {
             }
             ',' => {
                 if let Some(v) = acc {
-                    anyhow::ensure!(v <= 255, "Value {} exceeds u8 in {}", v, skel_path.display());
+                    anyhow::ensure!(
+                        v <= 255,
+                        "Value {} exceeds u8 in {}",
+                        v,
+                        skel_path.display()
+                    );
                     data.push(v as u8);
                     acc = None;
                 }
