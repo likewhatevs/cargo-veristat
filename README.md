@@ -10,7 +10,7 @@ In addition to that, it supports playing rodata dumps through the verifier in th
 ## Prerequisites
 
 - **veristat** on `$PATH` (`dnf install veristat` / `apt install veristat` / build from source)
-- **CAP_BPF** — veristat needs BPF privileges, so run with `sudo`
+- **CAP_BPF + CAP_PERFMON** — veristat needs BPF privileges, so run with `sudo` (or `setcap cap_bpf,cap_perfmon+ep $(which veristat)`)
 - **clang** — required by build systems that compile BPF C code (e.g. `libbpf-cargo`)
 
 ## Install
