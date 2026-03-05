@@ -152,27 +152,27 @@ fn run(args: cli::Args) -> Result<()> {
     if let Some(rodata_path) = &args.rodata {
         // --rodata: single target, single run with those globals
         let pkg_name = &args.targets[0];
-        if let Some(objects) = objects_by_package.get(pkg_name) {
-            let vars = rodata::parse_rodata(rodata_path)?;
-            let exclude = rodata::find_resizable_map_vars(objects);
-            let (vars, removed) = rodata::filter_globals(vars, &exclude);
-            if !removed.is_empty() {
-                println!(
-                    "Excluded {} resizable-map sizing variable(s): {}",
-                    removed.len(),
-                    removed.join(", ")
-                );
-            }
-
-            runs.push(veristat::VeristatRun {
-                key: veristat::RunKey {
-                    package: pkg_name.clone(),
-                    config: None,
-                },
-                objects: objects.clone(),
-                globals: vars,
-            });
+        let objects = objects_by_package
+            .get(pkg_name)
+            .ok_or_else(|| anyhow::anyhow!("no BPF objects extracted from '{}'", pkg_name))?;
+        let vars = rodata::parse_rodata(rodata_path)?;
+        let exclude = rodata::find_resizable_map_vars(objects);
+        let (vars, removed) = rodata::filter_globals(vars, &exclude);
+        if !removed.is_empty() {
+            println!(
+                "Excluded {} resizable-map sizing variable(s): {}",
+                removed.len(),
+                removed.join(", ")
+            );
         }
+        runs.push(veristat::VeristatRun {
+            key: veristat::RunKey {
+                package: pkg_name.clone(),
+                config: None,
+            },
+            objects: objects.clone(),
+            globals: vars,
+        });
     } else {
         // Auto-discovery: for each package, check for veristat/ directory
         for (pkg_name, objects) in &objects_by_package {
