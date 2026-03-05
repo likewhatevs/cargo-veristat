@@ -38,7 +38,7 @@ jobs:
           git clone --recurse-submodules --depth 1 https://github.com/libbpf/bpftool.git
           make -C bpftool/src -j$(nproc)
           sudo make -C bpftool/src install
-          sudo setcap cap_bpf,cap_perfmon+ep $(which bpftool)
+          sudo setcap cap_bpf,cap_perfmon,cap_sys_admin+ep $(which bpftool)
 
       - name: Build and install veristat
         run: |
