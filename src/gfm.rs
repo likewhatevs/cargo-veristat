@@ -1751,6 +1751,71 @@ mod tests {
         );
     }
 
+    // --- escape_html tests ---
+
+    #[test]
+    fn escape_html_no_special_chars() {
+        assert_eq!(escape_html("hello world"), "hello world");
+    }
+
+    #[test]
+    fn escape_html_ampersand() {
+        assert_eq!(escape_html("a&b"), "a&amp;b");
+    }
+
+    #[test]
+    fn escape_html_less_than() {
+        assert_eq!(escape_html("a<b"), "a&lt;b");
+    }
+
+    #[test]
+    fn escape_html_greater_than() {
+        assert_eq!(escape_html("a>b"), "a&gt;b");
+    }
+
+    #[test]
+    fn escape_html_all_special() {
+        assert_eq!(
+            escape_html("<script>alert('a&b')</script>"),
+            "&lt;script&gt;alert('a&amp;b')&lt;/script&gt;"
+        );
+    }
+
+    // --- emit_workflow_commands GfmMode::Off ---
+
+    #[test]
+    fn emit_workflow_commands_off_suppresses_notice_but_not_error() {
+        // GfmMode::Off suppresses ::notice for passing runs but still emits ::error for failures.
+        let results = vec![
+            make_result("pkg_a", None, vec![("a.bpf.o", "prog", "success", "100")]),
+            make_result("pkg_b", None, vec![("b.bpf.o", "prog", "failure", "0")]),
+        ];
+        let out = output_string(|w| emit_workflow_commands(w, GfmMode::Off, &results).map(|_| ()));
+        assert!(
+            !out.contains("::notice") && !out.contains("::debug"),
+            "GfmMode::Off should suppress pass notices, got: {:?}",
+            out
+        );
+        assert!(
+            out.contains("::error"),
+            "GfmMode::Off should still emit ::error for failures, got: {:?}",
+            out
+        );
+    }
+
+    // --- SystemInfo::detect smoke test ---
+
+    #[test]
+    fn system_info_detect_does_not_panic() {
+        // Just verify it runs without panicking; actual output depends on the environment.
+        let info = SystemInfo::detect(&["some_package".to_string()]);
+        // kernel string should be non-empty on any Linux system
+        assert!(
+            info.kernel.as_deref().is_some_and(|k| !k.is_empty()),
+            "expected kernel info from uname -a"
+        );
+    }
+
     /// Helper: push one iteration of a synthetic cycle into a log string.
     fn log_push_cycle_iteration(log: &mut String, i: usize) {
         log.push_str("; loop body @ test.c:10\n");

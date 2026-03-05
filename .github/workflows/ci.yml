@@ -16,7 +16,7 @@ jobs:
         with:
           components: clippy, rustfmt
       - run: cargo fmt -- --check
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -38,21 +38,20 @@ jobs:
           git clone --recurse-submodules --depth 1 https://github.com/libbpf/bpftool.git
           make -C bpftool/src -j$(nproc)
           sudo make -C bpftool/src install
+          sudo setcap cap_bpf,cap_perfmon,cap_sys_admin+ep $(which bpftool)
 
       - name: Build and install veristat
         run: |
           git clone --recurse-submodules --depth 1 https://github.com/libbpf/veristat.git
           make -C veristat/src -j$(nproc)
           sudo make -C veristat/src install
+          sudo setcap cap_bpf,cap_perfmon+ep $(which veristat)
 
       - name: Ensure bpffs is mounted
         run: sudo mount -t bpf bpf /sys/fs/bpf || true
 
       - name: Run tests with coverage
-        run: sudo -E env PATH="$PATH" cargo llvm-cov nextest --features integration --lcov --output-path lcov.info
-
-      - name: Fix permissions
-        run: sudo chown -R $(id -u):$(id -g) lcov.info target/
+        run: cargo llvm-cov nextest --features integration --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

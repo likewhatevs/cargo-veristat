@@ -147,81 +147,12 @@ fn run(args: cli::Args) -> Result<()> {
     }
 
     // Build the list of veristat runs
-    let mut runs: Vec<veristat::VeristatRun> = Vec::new();
-
-    if let Some(rodata_path) = &args.rodata {
-        // --rodata: single target, single run with those globals
-        let pkg_name = &args.targets[0];
-        if let Some(objects) = objects_by_package.get(pkg_name) {
-            let vars = rodata::parse_rodata(rodata_path)?;
-            let exclude = rodata::find_resizable_map_vars(objects);
-            let (vars, removed) = rodata::filter_globals(vars, &exclude);
-            if !removed.is_empty() {
-                println!(
-                    "Excluded {} resizable-map sizing variable(s): {}",
-                    removed.len(),
-                    removed.join(", ")
-                );
-            }
-
-            runs.push(veristat::VeristatRun {
-                key: veristat::RunKey {
-                    package: pkg_name.clone(),
-                    config: None,
-                },
-                objects: objects.clone(),
-                globals: vars,
-            });
-        }
-    } else {
-        // Auto-discovery: for each package, check for veristat/ directory
-        for (pkg_name, objects) in &objects_by_package {
-            let pkg = packages.iter().find(|p| &p.name == pkg_name);
-            let manifest_dir = pkg.map(|p| p.manifest_dir.as_path());
-
-            let exclude = rodata::find_resizable_map_vars(objects);
-            let configs = match manifest_dir {
-                Some(dir) => rodata::discover_configs(dir, "veristat", &exclude)?,
-                None => Vec::new(),
-            };
-
-            if configs.is_empty() {
-                // No veristat/ dir: single baseline run (current behavior)
-                runs.push(veristat::VeristatRun {
-                    key: veristat::RunKey {
-                        package: pkg_name.clone(),
-                        config: None,
-                    },
-                    objects: objects.clone(),
-                    globals: Vec::new(),
-                });
-            } else {
-                // Baseline run first
-                runs.push(veristat::VeristatRun {
-                    key: veristat::RunKey {
-                        package: pkg_name.clone(),
-                        config: Some("(baseline)".into()),
-                    },
-                    objects: objects.clone(),
-                    globals: Vec::new(),
-                });
-                // Then one run per config
-                for config in configs {
-                    runs.push(veristat::VeristatRun {
-                        key: veristat::RunKey {
-                            package: pkg_name.clone(),
-                            config: Some(config.name),
-                        },
-                        objects: objects.clone(),
-                        globals: config.globals,
-                    });
-                }
-            }
-        }
-    }
-
-    // Sort runs for deterministic ordering
-    runs.sort_by(|a, b| a.key.cmp(&b.key));
+    let runs = build_runs(
+        &objects_by_package,
+        &packages,
+        args.rodata.as_deref(),
+        args.targets.first().map(|s| s.as_str()),
+    )?;
 
     // Run veristat
     let gfm_mode = args.gfm_mode();
@@ -313,6 +244,92 @@ pub(crate) fn newest_mtime(dir: &Path) -> Result<SystemTime> {
     }
 
     Ok(newest)
+}
+
+/// Build the sorted list of veristat runs from extracted BPF objects.
+///
+/// If `rodata_path` is provided, builds a single run for `rodata_target` with
+/// the globals from that file (minus resizable-map sizing variables).
+/// Otherwise, auto-discovers `veristat/` config directories for each package:
+/// no configs → one baseline run; configs found → baseline + one run per config.
+pub(crate) fn build_runs(
+    objects_by_package: &HashMap<String, Vec<PathBuf>>,
+    packages: &[discovery::BpfPackage],
+    rodata_path: Option<&Path>,
+    rodata_target: Option<&str>,
+) -> Result<Vec<veristat::VeristatRun>> {
+    let mut runs = Vec::new();
+
+    if let Some(rodata_path) = rodata_path {
+        let pkg_name = rodata_target.expect("rodata_target required when rodata_path is Some");
+        let objects = objects_by_package
+            .get(pkg_name)
+            .ok_or_else(|| anyhow::anyhow!("no BPF objects extracted from '{}'", pkg_name))?;
+        let vars = rodata::parse_rodata(rodata_path)?;
+        let exclude = rodata::find_resizable_map_vars(objects);
+        let (vars, removed) = rodata::filter_globals(vars, &exclude);
+        if !removed.is_empty() {
+            println!(
+                "Excluded {} resizable-map sizing variable(s): {}",
+                removed.len(),
+                removed.join(", ")
+            );
+        }
+        runs.push(veristat::VeristatRun {
+            key: veristat::RunKey {
+                package: pkg_name.to_string(),
+                config: None,
+            },
+            objects: objects.clone(),
+            globals: vars,
+        });
+    } else {
+        for (pkg_name, objects) in objects_by_package {
+            let manifest_dir = packages
+                .iter()
+                .find(|p| &p.name == pkg_name)
+                .map(|p| p.manifest_dir.as_path());
+
+            let exclude = rodata::find_resizable_map_vars(objects);
+            let configs = match manifest_dir {
+                Some(dir) => rodata::discover_configs(dir, "veristat", &exclude)?,
+                None => Vec::new(),
+            };
+
+            if configs.is_empty() {
+                runs.push(veristat::VeristatRun {
+                    key: veristat::RunKey {
+                        package: pkg_name.clone(),
+                        config: None,
+                    },
+                    objects: objects.clone(),
+                    globals: Vec::new(),
+                });
+            } else {
+                runs.push(veristat::VeristatRun {
+                    key: veristat::RunKey {
+                        package: pkg_name.clone(),
+                        config: Some("(baseline)".into()),
+                    },
+                    objects: objects.clone(),
+                    globals: Vec::new(),
+                });
+                for config in configs {
+                    runs.push(veristat::VeristatRun {
+                        key: veristat::RunKey {
+                            package: pkg_name.clone(),
+                            config: Some(config.name),
+                        },
+                        objects: objects.clone(),
+                        globals: config.globals,
+                    });
+                }
+            }
+        }
+    }
+
+    runs.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(runs)
 }
 
 #[cfg(test)]
@@ -441,5 +458,133 @@ mod tests {
     #[test]
     fn profile_target_dir_custom() {
         assert_eq!(profile_target_dir(Some("ci")), "ci");
+    }
+
+    // --- build_runs tests ---
+
+    fn make_package(name: &str, manifest_dir: &std::path::Path) -> discovery::BpfPackage {
+        discovery::BpfPackage {
+            name: name.to_string(),
+            manifest_dir: manifest_dir.to_path_buf(),
+            disable_veristat: false,
+        }
+    }
+
+    fn write_rodata_json(dir: &std::path::Path, filename: &str, entries: &str) {
+        let json = format!(r#"[{{"formatted": {{"value": {{".rodata": [{entries}]}}}}}}]"#);
+        fs::write(dir.join(filename), json).unwrap();
+    }
+
+    #[test]
+    fn build_runs_no_veristat_dir_produces_single_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let objects = vec![dir.path().join("pkg_a.bpf.o")];
+        let mut map = HashMap::new();
+        map.insert("pkg_a".to_string(), objects.clone());
+        let packages = vec![make_package("pkg_a", dir.path())];
+
+        let runs = build_runs(&map, &packages, None, None).unwrap();
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].key.package, "pkg_a");
+        assert!(runs[0].key.config.is_none());
+        assert!(runs[0].globals.is_empty());
+        assert_eq!(runs[0].objects, objects);
+    }
+
+    #[test]
+    fn build_runs_with_configs_produces_baseline_plus_per_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let veristat_dir = dir.path().join("veristat");
+        fs::create_dir(&veristat_dir).unwrap();
+        write_rodata_json(&veristat_dir, "4_layers.json", r#"{"nr_layers": 4}"#);
+        write_rodata_json(&veristat_dir, "8_layers.json", r#"{"nr_layers": 8}"#);
+
+        let objects = vec![dir.path().join("pkg.bpf.o")];
+        let mut map = HashMap::new();
+        map.insert("pkg".to_string(), objects.clone());
+        let packages = vec![make_package("pkg", dir.path())];
+
+        let runs = build_runs(&map, &packages, None, None).unwrap();
+
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].key.config.as_deref(), Some("(baseline)"));
+        assert!(runs[0].globals.is_empty());
+        assert_eq!(runs[1].key.config.as_deref(), Some("4_layers"));
+        assert_eq!(runs[1].globals, vec!["nr_layers = 4"]);
+        assert_eq!(runs[2].key.config.as_deref(), Some("8_layers"));
+        assert_eq!(runs[2].globals, vec!["nr_layers = 8"]);
+    }
+
+    #[test]
+    fn build_runs_sorted_deterministically() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two packages — HashMap iteration order is non-deterministic
+        let mut map = HashMap::new();
+        map.insert("pkg_z".to_string(), vec![dir.path().join("z.bpf.o")]);
+        map.insert("pkg_a".to_string(), vec![dir.path().join("a.bpf.o")]);
+        let packages = vec![
+            make_package("pkg_z", dir.path()),
+            make_package("pkg_a", dir.path()),
+        ];
+
+        let runs = build_runs(&map, &packages, None, None).unwrap();
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].key.package, "pkg_a");
+        assert_eq!(runs[1].key.package, "pkg_z");
+    }
+
+    #[test]
+    fn build_runs_rodata_path_produces_single_run_with_globals() {
+        let dir = tempfile::tempdir().unwrap();
+        let rodata_file = dir.path().join("rodata.json");
+        write_rodata_json(dir.path(), "rodata.json", r#"{"mode": 1}"#);
+
+        let objects = vec![dir.path().join("pkg.bpf.o")];
+        let mut map = HashMap::new();
+        map.insert("pkg".to_string(), objects.clone());
+        let packages = vec![make_package("pkg", dir.path())];
+
+        let runs = build_runs(&map, &packages, Some(&rodata_file), Some("pkg")).unwrap();
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].key.package, "pkg");
+        assert!(runs[0].key.config.is_none());
+        assert_eq!(runs[0].globals, vec!["mode = 1"]);
+        assert_eq!(runs[0].objects, objects);
+    }
+
+    #[test]
+    fn build_runs_rodata_missing_package_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rodata_json(dir.path(), "rodata.json", r#"{"mode": 1}"#);
+        let rodata_file = dir.path().join("rodata.json");
+
+        let map: HashMap<String, Vec<PathBuf>> = HashMap::new();
+
+        let result = build_runs(&map, &[], Some(&rodata_file), Some("no_such_pkg"));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no BPF objects extracted from 'no_such_pkg'")
+        );
+    }
+
+    #[test]
+    fn build_runs_no_packages_entry_falls_back_to_no_manifest_dir() {
+        // Package in objects_by_package but not in packages slice → no manifest_dir
+        // → no veristat/ discovery → single run, no globals.
+        let dir = tempfile::tempdir().unwrap();
+        let mut map = HashMap::new();
+        map.insert("orphan".to_string(), vec![dir.path().join("x.bpf.o")]);
+
+        let runs = build_runs(&map, &[], None, None).unwrap();
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].key.package, "orphan");
+        assert!(runs[0].key.config.is_none());
     }
 }

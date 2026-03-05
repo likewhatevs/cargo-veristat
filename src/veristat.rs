@@ -20,6 +20,7 @@ impl fmt::Display for RunKey {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct VeristatRun {
     pub key: RunKey,
     pub objects: Vec<PathBuf>,
@@ -821,7 +822,7 @@ mod tests {
 
     #[test]
     fn run_key_ordering() {
-        let mut keys = vec![
+        let mut keys = [
             RunKey {
                 package: "scx_layered".to_string(),
                 config: Some("8_layers".to_string()),
