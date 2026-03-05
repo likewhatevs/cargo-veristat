@@ -20,6 +20,7 @@ impl fmt::Display for RunKey {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct VeristatRun {
     pub key: RunKey,
     pub objects: Vec<PathBuf>,
