@@ -1,5 +1,6 @@
 # cargo-veristat
 
+[![crates.io](https://img.shields.io/crates/v/cargo-veristat.svg)](https://crates.io/crates/cargo-veristat)
 [![CI](https://github.com/likewhatevs/cargo-veristat/actions/workflows/ci.yml/badge.svg)](https://github.com/likewhatevs/cargo-veristat/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/likewhatevs/cargo-veristat/graph/badge.svg)](https://codecov.io/github/likewhatevs/cargo-veristat)
 
@@ -16,7 +17,7 @@ In addition to that, it supports playing rodata dumps through the verifier in th
 ## Install
 
 ```sh
-cargo install --path .
+cargo install cargo-veristat
 ```
 
 ## Usage
