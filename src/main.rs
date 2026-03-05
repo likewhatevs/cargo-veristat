@@ -471,8 +471,7 @@ mod tests {
     }
 
     fn write_rodata_json(dir: &std::path::Path, filename: &str, entries: &str) {
-        let json =
-            format!(r#"[{{"formatted": {{"value": {{".rodata": [{entries}]}}}}}}]"#);
+        let json = format!(r#"[{{"formatted": {{"value": {{".rodata": [{entries}]}}}}}}]"#);
         fs::write(dir.join(filename), json).unwrap();
     }
 
@@ -566,10 +565,12 @@ mod tests {
 
         let result = build_runs(&map, &[], Some(&rodata_file), Some("no_such_pkg"));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("no BPF objects extracted from 'no_such_pkg'"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no BPF objects extracted from 'no_such_pkg'")
+        );
     }
 
     #[test]
