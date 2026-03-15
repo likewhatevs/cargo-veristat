@@ -264,6 +264,12 @@ fn emit_value(lines: &mut Vec<String>, prefix: &str, value: &Value) {
                 emit_value(lines, &indexed, elem);
             }
         }
+        Value::Object(obj) => {
+            for (field, val) in obj {
+                let dotted = format!("{}.{}", prefix, field);
+                emit_value(lines, &dotted, val);
+            }
+        }
         other => {
             eprintln!(
                 "warning: skipping unsupported rodata value for '{}': {}",
@@ -390,15 +396,36 @@ mod tests {
     }
 
     #[test]
-    fn object_value_skipped() {
+    fn object_value_expanded_with_dot_notation() {
         let json = rodata_json(r#"{"x": {"nested": 1}}"#);
-        assert_eq!(parse(&json), Vec::<String>::new());
+        assert_eq!(parse(&json), vec!["x.nested = 1"]);
+    }
+
+    #[test]
+    fn struct_fields_expanded() {
+        let json = rodata_json(
+            r#"{"topo_config": {"has_little_cores": true, "nr_cpus": 32, "nr_llcs": 2}}"#,
+        );
+        assert_eq!(
+            parse(&json),
+            vec![
+                "topo_config.has_little_cores = 1",
+                "topo_config.nr_cpus = 32",
+                "topo_config.nr_llcs = 2",
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_struct_expanded() {
+        let json = rodata_json(r#"{"outer": {"inner": {"val": 137}}}"#);
+        assert_eq!(parse(&json), vec!["outer.inner.val = 137"]);
     }
 
     #[test]
     fn mixed_types() {
         let json = rodata_json(
-            r#"{"nr_layers": 4}, {"smt_enabled": true}, {"order": [0, 1]}, {"name": "A"}, {"bad": null}"#,
+            r#"{"nr_layers": 4}, {"smt_enabled": true}, {"order": [0, 1]}, {"name": "A"}, {"cfg": {"x": 137}}, {"bad": null}"#,
         );
         assert_eq!(
             parse(&json),
@@ -409,6 +436,7 @@ mod tests {
                 "order[1] = 1",
                 "name[0] = 65",
                 "name[1] = 0",
+                "cfg.x = 137",
             ]
         );
     }

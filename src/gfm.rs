@@ -466,8 +466,34 @@ fn write_verifier_errors(
     writeln!(w, "\n### Verifier Errors\n")?;
 
     let mut was_truncated = Vec::with_capacity(logs.len());
+    let mut has_empty = false;
+
+    // Render empty logs (no verifier output) as a compact bullet list first
+    for log in logs {
+        if !log.log_body.trim().is_empty() {
+            continue;
+        }
+        has_empty = true;
+        let config_display = log.key.config.as_deref().unwrap_or("\u{2014}");
+        let label = format!("{} / {}", log.key.package, config_display);
+        let prog = extract_prog_name(&log.header);
+        writeln!(
+            w,
+            "- `{}` \u{2014} {} (no verifier output)",
+            escape_html(prog),
+            escape_html(&label),
+        )?;
+    }
+    if has_empty {
+        writeln!(w)?;
+    }
 
     for log in logs {
+        if log.log_body.trim().is_empty() {
+            was_truncated.push(false);
+            continue;
+        }
+
         let line_count = log.log_body.lines().count();
         let config_display = log.key.config.as_deref().unwrap_or("\u{2014}");
         let label = format!("{} / {}", log.key.package, config_display);
@@ -540,6 +566,29 @@ fn write_full_logs(
     }
 
     Ok(())
+}
+
+/// Extract the program name from a veristat PROCESSING header.
+///
+/// Input: `"/tmp/.tmpXXX/obj.bpf.o/prog_name, DURATION US: 0, VERDICT: failure, VERIFIER LOG:"`
+/// Output: `"obj.bpf.o/prog_name"`
+///
+/// Falls back to the full header (up to the first comma) when the path has
+/// fewer than two components.
+fn extract_prog_name(header: &str) -> &str {
+    let before_comma = header.split(',').next().unwrap_or(header).trim();
+    // Walk backwards to find object/prog from a path like /tmp/.tmpXXX/obj.bpf.o/prog
+    let parts: Vec<&str> = before_comma.rsplit('/').collect();
+    if parts.len() >= 2 {
+        // parts[0] = prog, parts[1] = obj — reconstruct "obj/prog"
+        let obj_start = before_comma.len()
+            - parts[0].len()
+            - 1 // the '/'
+            - parts[1].len();
+        &before_comma[obj_start..]
+    } else {
+        before_comma
+    }
 }
 
 fn escape_html(s: &str) -> String {
@@ -1749,6 +1798,95 @@ mod tests {
             !out.contains("truncated"),
             "should not be truncated with large budget"
         );
+    }
+
+    // --- extract_prog_name tests ---
+
+    #[test]
+    fn extract_prog_name_full_path() {
+        let header = "/tmp/.tmpOAN8Y2/scxcash_bpf_0.bpf.o/handle_do_fault, DURATION US: 0, VERDICT: failure, VERIFIER LOG:";
+        assert_eq!(
+            extract_prog_name(header),
+            "scxcash_bpf_0.bpf.o/handle_do_fault"
+        );
+    }
+
+    #[test]
+    fn extract_prog_name_no_path() {
+        assert_eq!(extract_prog_name("prog_name, DURATION US: 0"), "prog_name");
+    }
+
+    #[test]
+    fn extract_prog_name_single_component() {
+        assert_eq!(extract_prog_name("/obj/prog, FOO"), "obj/prog");
+    }
+
+    // --- empty log rendering tests ---
+
+    #[test]
+    fn write_verifier_errors_empty_log_renders_bullet() {
+        let logs = vec![make_log(
+            "scxcash",
+            None,
+            "/tmp/.tmpX/scxcash_bpf_0.bpf.o/handle_do_fault, DURATION US: 0, VERDICT: failure, VERIFIER LOG:",
+            "",
+        )];
+        let out = output_string(|w| write_verifier_errors(w, &logs, 100_000).map(|_| ()));
+
+        assert!(
+            out.contains("- `scxcash_bpf_0.bpf.o/handle_do_fault`"),
+            "should render as bullet, got: {}",
+            out
+        );
+        assert!(
+            out.contains("(no verifier output)"),
+            "should indicate no verifier output, got: {}",
+            out
+        );
+        assert!(
+            !out.contains("<details"),
+            "should not use details block for empty log, got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn write_verifier_errors_mixed_empty_and_nonempty() {
+        let logs = vec![
+            make_log(
+                "scxcash",
+                None,
+                "/tmp/.tmpX/obj.bpf.o/empty_prog, DURATION US: 0, VERDICT: failure, VERIFIER LOG:",
+                "",
+            ),
+            make_log(
+                "scxcash",
+                None,
+                "obj.bpf.o/real_prog, DURATION US: 137, VERDICT: failure, VERIFIER LOG:",
+                "R0 invalid mem access\n",
+            ),
+        ];
+        let out = output_string(|w| write_verifier_errors(w, &logs, 100_000).map(|_| ()));
+
+        // Empty log → bullet
+        assert!(out.contains("- `obj.bpf.o/empty_prog`"));
+        assert!(out.contains("(no verifier output)"));
+        // Non-empty log → details block
+        assert!(out.contains("<details open>"));
+        assert!(out.contains("R0 invalid mem access"));
+    }
+
+    #[test]
+    fn write_verifier_errors_was_truncated_parallel_to_input() {
+        let logs = vec![
+            make_log("pkg", None, "obj/empty", ""),
+            make_log("pkg", None, "obj/short", "one line\n"),
+            make_log("pkg", None, "obj/also_empty", "  \n"),
+        ];
+        let mut buf = Vec::new();
+        let was_truncated = write_verifier_errors(&mut buf, &logs, 100_000).unwrap();
+        // Should be parallel to input: [false, false, false]
+        assert_eq!(was_truncated, vec![false, false, false]);
     }
 
     // --- escape_html tests ---
