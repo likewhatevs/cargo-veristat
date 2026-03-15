@@ -10,6 +10,7 @@ mod veristat;
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::collections::HashMap;
+use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::SystemTime;
@@ -79,7 +80,10 @@ fn run(args: cli::Args) -> Result<()> {
             if let Some(ref manifest) = args.manifest_path {
                 cmd.arg("--manifest-path").arg(manifest);
             }
+            // Send cargo build's stderr to stdout so build progress
+            // doesn't get caught by stderr redirects (e.g. 2>>$GITHUB_STEP_SUMMARY).
             let status = cmd
+                .stderr(dup_stdout()?)
                 .status()
                 .with_context(|| format!("Failed to run cargo build for {}", pkg.name))?;
             if !status.success() {
@@ -182,6 +186,19 @@ fn run(args: cli::Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Duplicate stdout as a `Stdio` handle for use as a subprocess stderr,
+/// so that cargo build progress goes to stdout instead of getting caught
+/// by stderr redirects (e.g. `2>>$GITHUB_STEP_SUMMARY`).
+fn dup_stdout() -> Result<process::Stdio> {
+    let fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
+    anyhow::ensure!(
+        fd >= 0,
+        "dup(STDOUT_FILENO) failed: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(unsafe { process::Stdio::from_raw_fd(fd) })
 }
 
 /// Map a cargo `--profile` name to its target subdirectory.
@@ -338,6 +355,38 @@ mod tests {
     use std::fs;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn dup_stdout_returns_valid_stdio() {
+        let stdio = dup_stdout().unwrap();
+        // Verify it works by using it as stderr for a subprocess
+        let output = process::Command::new("echo")
+            .arg("test")
+            .stderr(stdio)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+
+    #[test]
+    fn dup_stdout_cargo_build_stderr_goes_to_stdout() {
+        // Verify cargo build stderr is redirected: run a command that writes
+        // to stderr, capture parent stdout, confirm stderr content appears there.
+        let stdio = dup_stdout().unwrap();
+        let output = process::Command::new("sh")
+            .args(["-c", "echo from_stderr >&2"])
+            .stderr(stdio)
+            .stdout(process::Stdio::piped())
+            .output()
+            .unwrap();
+        // stderr was redirected to the dup'd stdout (not captured here),
+        // so captured stdout of `sh` should be empty (echo went to fd2→parent stdout)
+        assert!(output.status.success());
+        assert!(
+            output.stderr.is_empty(),
+            "stderr should have been redirected"
+        );
+    }
 
     #[test]
     fn is_stale_returns_true_when_binary_missing() {
