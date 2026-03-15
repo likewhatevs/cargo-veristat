@@ -96,6 +96,7 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "csv",
+ "libc",
  "object",
  "rustc-demangle",
  "serde",
