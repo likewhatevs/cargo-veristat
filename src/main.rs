@@ -69,8 +69,18 @@ fn run(args: cli::Args) -> Result<()> {
         let binary_name = discovery::binary_name(&metadata, &pkg.name);
         let binary_path = target_dir.join(&profile_dir).join(&binary_name);
 
-        // Build if stale or missing
-        if is_stale(&binary_path, &pkg.manifest_dir) {
+        // Build if stale or missing (unless --no-build)
+        if args.no_build {
+            if !binary_path.exists() {
+                eprintln!(
+                    "error: --no-build but binary not found: {}",
+                    binary_path.display()
+                );
+                build_errors.push(pkg.name.clone());
+                continue;
+            }
+            println!("{}: skipping build (--no-build)", pkg.name);
+        } else if is_stale(&binary_path, &pkg.manifest_dir) {
             println!("Building {}...", pkg.name);
             let mut cmd = process::Command::new("cargo");
             cmd.arg("build").arg("-p").arg(&pkg.name);

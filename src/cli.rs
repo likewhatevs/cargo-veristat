@@ -40,6 +40,10 @@ pub struct Args {
     #[arg(long, conflicts_with = "stderr_gfm")]
     pub stderr_gfm_erronly: bool,
 
+    /// Skip building packages (binaries must already exist).
+    #[arg(long)]
+    pub no_build: bool,
+
     /// Output raw verifier logs without cycle collapse.
     #[arg(long)]
     pub raw: bool,
@@ -174,6 +178,18 @@ mod tests {
         let result =
             Cargo::try_parse_from(["cargo", "veristat", "--stderr-gfm", "--stderr-gfm-erronly"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_no_build_flag() {
+        let args = parse(&["cargo", "veristat", "--no-build"]);
+        assert!(args.no_build);
+    }
+
+    #[test]
+    fn parse_no_build_default_false() {
+        let args = parse(&["cargo", "veristat"]);
+        assert!(!args.no_build);
     }
 
     #[test]
