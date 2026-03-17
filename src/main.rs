@@ -36,7 +36,8 @@ fn run(args: cli::Args) -> Result<()> {
     veristat::check_veristat()?;
 
     // Load workspace metadata once
-    let metadata = discovery::load_metadata(args.manifest_path.as_ref())?;
+    let metadata =
+        discovery::load_metadata(args.manifest_path.as_ref(), args.metadata_json.as_ref())?;
 
     // Discover packages
     let packages = discovery::discover(&metadata, &args.targets, args.manifest_path.as_ref())?;

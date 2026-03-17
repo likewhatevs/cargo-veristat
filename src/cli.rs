@@ -44,6 +44,11 @@ pub struct Args {
     #[arg(long)]
     pub no_build: bool,
 
+    /// Path to pre-computed `cargo metadata --format-version 1` JSON output.
+    /// Skips running `cargo metadata` at startup.
+    #[arg(long)]
+    pub metadata_json: Option<PathBuf>,
+
     /// Output raw verifier logs without cycle collapse.
     #[arg(long)]
     pub raw: bool,
@@ -202,6 +207,18 @@ mod tests {
     fn parse_no_raw_default() {
         let args = parse(&["cargo", "veristat"]);
         assert!(!args.raw);
+    }
+
+    #[test]
+    fn parse_metadata_json() {
+        let args = parse(&["cargo", "veristat", "--metadata-json", "/tmp/meta.json"]);
+        assert_eq!(args.metadata_json.unwrap(), PathBuf::from("/tmp/meta.json"));
+    }
+
+    #[test]
+    fn parse_metadata_json_default_none() {
+        let args = parse(&["cargo", "veristat"]);
+        assert!(args.metadata_json.is_none());
     }
 
     #[test]
