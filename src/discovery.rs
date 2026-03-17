@@ -116,7 +116,19 @@ fn manifest_scope(metadata: &Metadata, manifest_path: Option<&PathBuf>) -> Optio
 }
 
 /// Load workspace metadata.
-pub fn load_metadata(manifest_path: Option<&PathBuf>) -> Result<Metadata> {
+///
+/// If `json_path` is provided, reads pre-computed `cargo metadata` JSON from
+/// that file instead of invoking `cargo metadata`.
+pub fn load_metadata(
+    manifest_path: Option<&PathBuf>,
+    json_path: Option<&PathBuf>,
+) -> Result<Metadata> {
+    if let Some(path) = json_path {
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("Failed to open metadata JSON: {}", path.display()))?;
+        return serde_json::from_reader(std::io::BufReader::new(file))
+            .context("Failed to parse metadata JSON");
+    }
     let mut cmd = MetadataCommand::new();
     if let Some(path) = manifest_path {
         cmd.manifest_path(path);
@@ -330,6 +342,69 @@ mod tests {
         });
 
         serde_json::from_value(json).expect("failed to parse mock metadata")
+    }
+
+    fn mock_metadata_json() -> serde_json::Value {
+        let bin_foo = make_package("bin_foo", serde_json::Value::Null, true);
+        serde_json::json!({
+            "packages": [bin_foo],
+            "workspace_members": [
+                "bin_foo 0.1.0 (path+file:///bin_foo)"
+            ],
+            "workspace_root": "/workspace",
+            "target_directory": "/workspace/target",
+            "version": 1,
+            "resolve": null,
+            "metadata": null
+        })
+    }
+
+    #[test]
+    fn load_metadata_from_json_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("meta.json");
+        let json = mock_metadata_json();
+        std::fs::write(&json_path, serde_json::to_string(&json).unwrap()).unwrap();
+
+        let meta = load_metadata(None, Some(&json_path)).unwrap();
+        assert_eq!(meta.packages.len(), 1);
+        assert_eq!(meta.packages[0].name, "bin_foo");
+        assert_eq!(
+            meta.target_directory,
+            cargo_metadata::camino::Utf8PathBuf::from("/workspace/target")
+        );
+    }
+
+    #[test]
+    fn load_metadata_json_missing_file_errors() {
+        let path = PathBuf::from("/tmp/nonexistent_cargo_veristat_test.json");
+        let result = load_metadata(None, Some(&path));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to open"));
+    }
+
+    #[test]
+    fn load_metadata_json_invalid_json_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("bad.json");
+        std::fs::write(&json_path, "not json").unwrap();
+
+        let result = load_metadata(None, Some(&json_path));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to parse"));
+    }
+
+    #[test]
+    fn load_metadata_json_roundtrips_with_discover() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("meta.json");
+        let json = mock_metadata_json();
+        std::fs::write(&json_path, serde_json::to_string(&json).unwrap()).unwrap();
+
+        let meta = load_metadata(None, Some(&json_path)).unwrap();
+        let result = discover(&meta, &[], None).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "bin_foo");
     }
 
     #[test]
